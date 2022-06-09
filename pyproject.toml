@@ -11,6 +11,11 @@ scipy = "^1.8.1"
 jupyterlab = "^3.4.2"
 matplotlib = "^3.5.2"
 pytorch-lightning = "^1.6.4"
+wandb = "^0.12.17"
+ipdb = "^0.13.9"
+torchdiffeq = "^0.2.3"
+plotly = "^5.8.0"
+pandas = "^1.4.2"
 
 [tool.poetry.dev-dependencies]
 

@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from legendre.models.cnode import CNODE
 
 from legendre.utils import str2bool
 import pytorch_lightning as pl
@@ -10,18 +11,20 @@ import os
 import torch
 
 from legendre.models.node import SequentialODE
+from legendre.models.cnode import CNODE
 from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
 
 def main(model_cls, data_cls, args):
     dataset = data_cls(**vars(args))
     dataset.prepare_data()
 
-    model = model_cls(**vars(args))
+    output_dim = 1 # hard coded for now
+    model = model_cls(output_dim = 1, **vars(args))
     #model.set_classes(num_classes_model=1) #For pretraining, only a single model
-    
+ 
     logger = WandbLogger(
-        name=f"CF_{args.data_type}",
-        project=f"counterfactuals",
+        name=f"NODE_{args.data_type}",
+        project=f"orthopoly",
         entity="edebrouwer",
         log_model=False
     )
@@ -50,13 +53,18 @@ if __name__=="__main__":
     parser.add_argument('--max_epochs', default=500, type=int)
     parser.add_argument('--early_stopping', default=20, type=int)
     parser.add_argument('--data_type', type = str, default = "SimpleTraj")
+    parser.add_argument('--model_type', type = str, default = "SequentialODE")
 
     partial_args, _ = parser.parse_known_args()
 
-    model_cls = SequentialODE 
     
     if partial_args.data_type == "SimpleTraj":
         data_cls = SimpleTrajDataModule
+
+    if partial_args.model_type == "CNODE":
+        model_cls = CNODE
+    elif partial_args.model_type == "SequentialODE":
+        model_cls = SequentialODE
 
     parser = model_cls.add_model_specific_args(parser)
     parser = data_cls.add_dataset_specific_args(parser)

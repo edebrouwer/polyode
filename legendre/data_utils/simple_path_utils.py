@@ -12,7 +12,7 @@ def generate_path(phase,Nt,Nobs):
     Nobs : Number of observations to select
     phase : phase to add to this particular time series
     """
-    x = np.linspace(0,10,Nt)
+    x = np.linspace(1,10,Nt)
     y = np.sin(x + phase) * np.cos(3*(x+phase))
     xobs = x[1:-1:Nt//Nobs]
     yobs = y[1:-1:Nt//Nobs]
@@ -28,23 +28,28 @@ def generate_dataset(N,Nt,Nobs):
         Xobs.append(xobs)
         Yobs.append(yobs)
     Xobs = np.stack(Xobs)
-    Yobs = np.stack(Yobs)
+    Yobs = np.stack(Yobs)[...,None]
     return Xobs, Yobs
 
 
 class SimpleTrajDataset(Dataset):
-    def __init__(self,N,Nt,Nobs):
+    def __init__(self,N,Nt = 200,Nobs = 10, noise_std = 0., seed = 421):
         super().__init__()
         self.N = N
         self.Nt = Nt
         self.Nobs = Nobs
 
+        np.random.seed(seed)
         self.Tobs, self.Yobs = generate_dataset(N,Nt,Nobs)
 
     def __len__(self):
         return self.N
     
     def __getitem__(self,idx):
+        """
+        Tobs dim : N x T
+        Yobs : N x T x D
+        """
         return self.Tobs[idx], self.Yobs[idx]
 
 
@@ -109,6 +114,6 @@ class SimpleTrajDataModule(pl.LightningDataModule):
         parser = argparse.ArgumentParser(parents=[parent], add_help=False)
         parser.add_argument('--seed', type=int, default=42)
         parser.add_argument('--batch_size', type=int, default=128)
-        parser.add_argument('--N_ts', type=int, default=1000)
+        parser.add_argument('--N', type=int, default=1000)
         parser.add_argument('--noise_std', type=float, default=0)
         return parser
