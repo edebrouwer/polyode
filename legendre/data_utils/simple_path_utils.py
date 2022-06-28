@@ -41,6 +41,7 @@ class SimpleTrajDataset(Dataset):
 
         np.random.seed(seed)
         self.Tobs, self.Yobs = generate_dataset(N,Nt,Nobs)
+        self.label = (self.Yobs[:,5]>0.5).astype(float)
 
     def __len__(self):
         return self.N
@@ -50,7 +51,7 @@ class SimpleTrajDataset(Dataset):
         Tobs dim : N x T
         Yobs : N x T x D
         """
-        return self.Tobs[idx], self.Yobs[idx]
+        return self.Tobs[idx], self.Yobs[idx], self.label[idx]
 
 
 class SimpleTrajDataModule(pl.LightningDataModule):

@@ -10,6 +10,9 @@ import plotly.graph_objects as go
 import pandas as pd
 from legendre.models.ode_utils import NODE
 from torchdiffeq import odeint
+import numpy as np
+
+from sklearn.metrics import roc_auc_score
 
 def get_value_from_cn(cn):
     Nc = cn.shape[-1]
@@ -17,7 +20,7 @@ def get_value_from_cn(cn):
     return prod_cn.sum(-1)[...,None]
 
 class CNODEmod(nn.Module):
-    def __init__(self,Nc,input_dim ,hidden_dim, Delta):
+    def __init__(self,Nc,input_dim ,hidden_dim, Delta, corr_time):
         """
         Nc = dimension of the coefficients vector
         output_dim = dimension of the INPUT (but also the output of the reconstruction)
@@ -38,7 +41,8 @@ class CNODEmod(nn.Module):
 
         self.node = nn.Sequential(nn.Linear(Nc,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,input_dim))
 
-        self.corr_time = 0.1 # time for the correction
+        self.corr_time = corr_time # time for the correction
+        self.hidden_dim = hidden_dim
 
     def ode_fun(self,t,cn):
         return torch.matmul(cn,self.A.T) + self.B[None,:]*self.node(cn)
@@ -48,7 +52,7 @@ class CNODEmod(nn.Module):
         return torch.matmul(cn,self.A.T) + self.B[None,:]*y_est
 
 
-    def forward(self,end_time, start_time, cn, eval_mode = False):
+    def forward_ode(self,end_time, start_time, cn, eval_mode = False):
         if eval_mode:
             """
             When in eval mode, the NODE returns the results in between the observations
@@ -62,6 +66,8 @@ class CNODEmod(nn.Module):
             pre_h_index = len(pre_indices)
             h_out = odeint(self.ode_fun,cn, eval_times_) 
             h_pre = h_out[pre_h_index]
+            eval_times_post = eval_times[post_indices]
+            h_out_post = h_out[post_indices+1]
             h_out = h_out[pre_indices] #only report pre-correction hiddens in eval_mode
             eval_times = eval_times[pre_indices]
         else:
@@ -70,10 +76,15 @@ class CNODEmod(nn.Module):
             h_pre = h_out[1]
             h_out = torch.stack([h_out[0],h_out[2]])
             eval_times = eval_times[[0,2]]
-        return h_out, eval_times, h_pre
+            eval_times_post = None
+            h_out_post = None
+        return h_out, eval_times, h_pre, eval_times_post, h_out_post
 
     def update(self,end_time,cn,y,y_pred, eval_mode = False):
-        t0 = end_time - self.corr_time
+        """
+        y_pred is the predicted value at end_time - corr_time
+        """
+        t0 = end_time - self.corr_time 
         t1 = end_time
         if eval_mode:
             eval_times = torch.linspace(t0,t1,steps = 10).to(cn.device)
@@ -83,6 +94,48 @@ class CNODEmod(nn.Module):
         h_out = odeint(lambda t,h : self.ode_approx(t,h, t0 = t0, t1 = t1, y = y, y_pred = y_pred), cn, eval_times)
         return h_out, eval_times
 
+    
+    def forward(self,times, Y, eval_mode = False):
+        """
+        eval mode returns the ode integrations at multiple times in between observationsOnly 
+        """
+        h = torch.zeros((Y.shape[0],self.hidden_dim), device = Y.device)
+        current_time = 0
+        non_corrected_preds = []
+        non_corrected_times = []
+        preds_vec = []
+        times_vec = []
+        diff_h = 0
+        for i_t, time in enumerate(times):
+            h_proj, eval_times, h_pre, eval_times_post, h_post = self.forward_ode(time,current_time,h, eval_mode = eval_mode)
+            preds = get_value_from_cn(h_proj)
+            
+            #taking care of the observation transition 
+            pred_pre = get_value_from_cn(h_pre)
+            #pred_post = get_value_from_cn(h_proj)
+            h_update, update_eval_times = self.update(time,h_pre,Y[:,i_t,:].float(),pred_pre)        
+            h = h_update[-1]
+
+            if eval_mode:
+                preds_post = get_value_from_cn(h_post)
+                non_corrected_preds.append(torch.cat([preds,preds_post])[1:])
+                non_corrected_times.append(torch.cat([eval_times,eval_times_post])[1:])
+                
+                preds_update = get_value_from_cn(h_update)
+                eval_times = torch.cat([eval_times,update_eval_times])
+                preds = torch.cat([preds,preds_update])
+
+
+            preds_vec.append(preds[1:])
+            times_vec.append(eval_times[1:])
+            current_time = time
+        out_pred = torch.cat(preds_vec).permute(1,0,2) # NxTxD
+        out_times = torch.cat(times_vec)
+        if eval_mode:
+            non_corrected_times = torch.cat(non_corrected_times)
+            non_corrected_preds = torch.cat(non_corrected_preds).permute(1,0,2)
+            return out_pred, h, out_times, non_corrected_preds, non_corrected_times
+        return out_pred, h, out_times
 
 
 class CNODE(pl.LightningModule):
@@ -94,47 +147,23 @@ class CNODE(pl.LightningModule):
         output_dim,
         step_size,
         weight_decay,
+        Delta,
+        corr_time,
         **kwargs
     ):
         super().__init__()
         self.save_hyperparameters()
         self.hidden_dim = hidden_dim
-        self.node_model = CNODEmod(Nc = hidden_dim,input_dim = 1, hidden_dim = hidden_dim, Delta = 5)
+        self.node_model = CNODEmod(Nc = hidden_dim,input_dim = 1, hidden_dim = hidden_dim, Delta = Delta, corr_time = corr_time)
         #self.update_cell = ObsUpdate(output_dim,hidden_dim)
         self.output_mod = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,output_dim))
+        self.Delta = Delta 
     
-    def forward(self,times, Y, eval_mode = False):
-        """
-        eval mode returns the ode integrations at multiple times in between observationsOnly 
-        """
-        h = torch.zeros( (Y.shape[0],self.hidden_dim), device = Y.device)
-        current_time = 0
-        preds_vec = []
-        times_vec = []
-        diff_h = 0
-        for i_t, time in enumerate(times):
-            h_proj, eval_times, h_pre = self.node_model(time,current_time,h, eval_mode = eval_mode)
-            preds = get_value_from_cn(h_proj)
-            
-            #taking care of the observation transition 
-            pred_pre = get_value_from_cn(h_pre)
-            h_update, update_eval_times = self.node_model.update(time,h_pre,Y[:,i_t,:].float(),pred_pre)        
-            h = h_update[-1]
+    def forward(self,times,Y,eval_mode = False):
+        return self.node_model(times,Y, eval_mode = eval_mode)
 
-            if eval_mode:
-                preds_update = get_value_from_cn(h_update)
-                eval_times = torch.cat([eval_times,update_eval_times])
-                preds = torch.cat([preds,preds_update])
-
-            preds_vec.append(preds[1:])
-            times_vec.append(eval_times[1:])
-            current_time = time
-        out_pred = torch.cat(preds_vec).permute(1,0,2) # NxTxD
-        out_times = torch.cat(times_vec)
-        return out_pred, h, out_times
-    
     def training_step(self,batch, batch_idx):
-        T, Y = batch
+        T, Y, label = batch
         assert len(torch.unique(T)) == T.shape[1]
         times = torch.sort(torch.unique(T))[0]
         preds, embedding, pred_times = self(times,Y)
@@ -143,7 +172,7 @@ class CNODE(pl.LightningModule):
         return {"loss":loss}
 
     def validation_step(self,batch, batch_idx):
-        T, Y = batch
+        T, Y, label = batch
         assert len(torch.unique(T)) == T.shape[1]
         times = torch.sort(torch.unique(T))[0]
         preds, embedding, pred_times = self(times,Y)
@@ -156,11 +185,19 @@ class CNODE(pl.LightningModule):
         Y_sample = outputs[0]["Y"]
 
         times = torch.sort(torch.unique(T_sample))[0]
-        preds, embedding, pred_times = self(times,Y_sample, eval_mode = True)
+        preds, embedding, pred_times, non_corrected_preds, non_corrected_times = self(times,Y_sample, eval_mode = True)
+
+        Tmax = T_sample.max().cpu().numpy()
+        Nc = embedding.shape[-1] #number of coefficients
+        rec_span = np.linspace(Tmax-self.Delta,Tmax)
+        recs = np.polynomial.legendre.legval((2/self.Delta)*(rec_span-Tmax) + 1, (embedding.cpu().numpy() * [(2*n+1)**0.5 for n in range(Nc)]).T)
+
 
         # ----- Plotting the filtered trajectories ---- 
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x = pred_times.cpu(),y = preds[0,:,0].cpu(),mode = 'lines',name='predictions'))
+        fig.add_trace(go.Scatter(x = pred_times.cpu(),y = preds[0,:,0].cpu(),mode = 'lines',name='corrected - predictions'))
+        fig.add_trace(go.Scatter(x = non_corrected_times.cpu(),y = non_corrected_preds[0,:,0].cpu(),mode = 'lines',name='predictions'))
+        fig.add_trace(go.Scatter(x = rec_span,y = recs[0],mode = 'lines',name='polynomial reconstruction'))
         fig.add_trace(go.Scatter(x = T_sample[0].cpu(),y = Y_sample[0,:,0].cpu(),mode = 'markers',name='observations'))
         
         self.logger.experiment.log({"chart":fig})
@@ -176,6 +213,63 @@ class CNODE(pl.LightningModule):
         parser = argparse.ArgumentParser(parents=[parent], add_help = False)
         parser.add_argument('--hidden_dim', type=int, default=32)
         parser.add_argument('--lr', type=float, default=0.001)
-        parser.add_argument('--weight_decay', type=float, default=0.001)
+        parser.add_argument('--weight_decay', type=float, default=0.)
         parser.add_argument('--step_size', type=float, default=0.05)
+        parser.add_argument('--Delta', type=float, default=5, help = "Memory span")
+        parser.add_argument('--corr_time', type=float, default=0.5, help = "Correction span")
+        return parser
+
+
+class CNODEClassification(pl.LightningModule):
+    def __init__(self,lr,
+        hidden_dim,
+        weight_decay,
+        init_model,
+        **kwargs
+    ):
+
+        super().__init__()
+        self.save_hyperparameters()
+        self.embedding_model = init_model
+        self.embedding_model.freeze()
+        self.classif_model = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(), nn.Linear(hidden_dim,1))
+
+    def forward(self,times,Y,eval_mode = False):
+        _, embedding, _ = self.embedding_model(times,Y)
+        preds = self.classif_model(embedding)
+        return preds
+
+    def training_step(self,batch, batch_idx):
+        T, Y, label = batch
+        assert len(torch.unique(T)) == T.shape[1]
+        times = torch.sort(torch.unique(T))[0]
+        preds = self(times,Y)
+        loss = torch.nn.BCEWithLogitsLoss()(preds.double(),label)
+        self.log("train_loss",loss,on_epoch=True)
+        return {"loss":loss}
+
+    def validation_step(self,batch, batch_idx):
+        T, Y, label = batch
+        assert len(torch.unique(T)) == T.shape[1]
+        times = torch.sort(torch.unique(T))[0]
+        preds = self(times,Y)
+        loss = torch.nn.BCEWithLogitsLoss()(preds.double(),label)
+        self.log("val_loss",loss,on_epoch=True)
+        return {"Y":Y, "preds":preds, "T":T, "labels":label}
+    
+    def validation_epoch_end(self, outputs):
+        preds = torch.cat([x["preds"] for x in outputs])
+        labels = torch.cat([x["labels"] for x in outputs])
+        auc = roc_auc_score(labels.cpu().numpy(),preds.cpu().numpy())
+        self.log("val_auc",auc,on_epoch=True)
+    
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.classif_model.parameters(),lr = self.hparams.lr, weight_decay = self.hparams.weight_decay)
+    @classmethod
+    def add_model_specific_args(cls, parent):
+        import argparse
+        parser = argparse.ArgumentParser(parents=[parent], add_help = False)
+        parser.add_argument('--hidden_dim', type=int, default=32)
+        parser.add_argument('--lr', type=float, default=0.001)
+        parser.add_argument('--weight_decay', type=float, default=0.)
         return parser

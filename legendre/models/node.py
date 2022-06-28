@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import pandas as pd
 from legendre.models.ode_utils import NODE
 
+from sklearn.metrics import roc_auc_score
 
 class ObsUpdate(nn.Module):
     def __init__(self,input_dim, hidden_dim):
@@ -16,6 +17,8 @@ class ObsUpdate(nn.Module):
         self.cell = nn.GRUCell(input_dim,hidden_dim)
     def forward(self,input,hidden):
         return self.cell(input,hidden)
+
+
 
 class SequentialODE(pl.LightningModule):
     def __init__(
@@ -59,7 +62,7 @@ class SequentialODE(pl.LightningModule):
         return out_pred, h, out_times, diff_h
     
     def training_step(self,batch, batch_idx):
-        T, Y = batch
+        T, Y, label = batch
         assert len(torch.unique(T)) == T.shape[1]
         times = torch.sort(torch.unique(T))[0]
         preds, embedding, pred_times, diff_h = self(times,Y)
@@ -70,7 +73,7 @@ class SequentialODE(pl.LightningModule):
         return {"loss":loss}
 
     def validation_step(self,batch, batch_idx):
-        T, Y = batch
+        T, Y, label = batch
         assert len(torch.unique(T)) == T.shape[1]
         times = torch.sort(torch.unique(T))[0]
         preds, embedding, pred_times, diff_h = self(times,Y)
@@ -105,6 +108,61 @@ class SequentialODE(pl.LightningModule):
         parser = argparse.ArgumentParser(parents=[parent], add_help = False)
         parser.add_argument('--hidden_dim', type=int, default=32)
         parser.add_argument('--lr', type=float, default=0.001)
-        parser.add_argument('--weight_decay', type=float, default=0.001)
+        parser.add_argument('--weight_decay', type=float, default=0.)
         parser.add_argument('--step_size', type=float, default=0.05)
+        return parser
+
+
+class SequentialODEClassification(pl.LightningModule):
+    def __init__(self,lr,
+        hidden_dim,
+        weight_decay,
+        init_model,
+        **kwargs
+    ):
+
+        super().__init__()
+        self.save_hyperparameters()
+        self.embedding_model = init_model
+        self.embedding_model.freeze()
+        self.classif_model = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(), nn.Linear(hidden_dim,1))
+
+    def forward(self,times,Y,eval_mode = False):
+        _, embedding, _, _ = self.embedding_model(times,Y)
+        preds = self.classif_model(embedding)
+        return preds
+
+    def training_step(self,batch, batch_idx):
+        T, Y, label = batch
+        assert len(torch.unique(T)) == T.shape[1]
+        times = torch.sort(torch.unique(T))[0]
+        preds = self(times,Y)
+        loss = torch.nn.BCEWithLogitsLoss()(preds.double(),label)
+        self.log("train_loss",loss,on_epoch=True)
+        return {"loss":loss}
+
+    def validation_step(self,batch, batch_idx):
+        T, Y, label = batch
+        assert len(torch.unique(T)) == T.shape[1]
+        times = torch.sort(torch.unique(T))[0]
+        preds = self(times,Y)
+        loss = torch.nn.BCEWithLogitsLoss()(preds.double(),label)
+        self.log("val_loss",loss,on_epoch=True)
+        return {"Y":Y, "preds":preds, "T":T, "labels":label}
+    
+    def validation_epoch_end(self, outputs):
+        preds = torch.cat([x["preds"] for x in outputs])
+        labels = torch.cat([x["labels"] for x in outputs])
+        auc = roc_auc_score(labels.cpu().numpy(),preds.cpu().numpy())
+        self.log("val_auc",auc,on_epoch=True)
+    
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.classif_model.parameters(),lr = self.hparams.lr, weight_decay = self.hparams.weight_decay)
+    @classmethod
+    def add_model_specific_args(cls, parent):
+        import argparse
+        parser = argparse.ArgumentParser(parents=[parent], add_help = False)
+        parser.add_argument('--hidden_dim', type=int, default=32)
+        parser.add_argument('--lr', type=float, default=0.001)
+        parser.add_argument('--weight_decay', type=float, default=0.)
         return parser
