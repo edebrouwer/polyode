@@ -6,41 +6,48 @@ from scipy.integrate import odeint
 from torch.utils.data import Dataset, DataLoader, Subset
 from legendre.utils import str2bool
 
-def generate_path(phase,Nt,Nobs):
+def generate_path(phase,Nt,Nobs, irregular_rate = 1):
     """
     Nt : Number of time points to simulate
     Nobs : Number of observations to select
     phase : phase to add to this particular time series
+    irregular_rate : what is the rate of selection of observations (if 1, then the data is regularly sampled)
     """
     x = np.linspace(1,10,Nt)
     y = np.sin(x + phase) * np.cos(3*(x+phase))
     xobs = x[1:-1:Nt//Nobs]
     yobs = y[1:-1:Nt//Nobs]
+
+    mask = np.random.binomial(1,irregular_rate,size = xobs.shape[0]).astype(bool)
+    xobs = xobs[mask]
+    yobs = yobs[mask]
+
     return x,y, xobs, yobs
 
-def generate_dataset(N,Nt,Nobs):
+def generate_dataset(N,Nt,Nobs, irregular_rate ):
     Xobs = []
     Yobs = []
     for n in range(N):
         phase = 2*np.random.randn()*np.pi
-        x,y,xobs, yobs = generate_path(phase,Nt,Nobs)
+        x,y,xobs, yobs = generate_path(phase,Nt,Nobs, irregular_rate = irregular_rate)
         
         Xobs.append(xobs)
         Yobs.append(yobs)
+    import ipdb; ipdb.set_trace()
     Xobs = np.stack(Xobs)
     Yobs = np.stack(Yobs)[...,None]
     return Xobs, Yobs
 
 
 class SimpleTrajDataset(Dataset):
-    def __init__(self,N,Nt = 200,Nobs = 10, noise_std = 0., seed = 421):
+    def __init__(self,N,Nt = 200,Nobs = 10, noise_std = 0., seed = 421, irregular_rate = 1.):
         super().__init__()
         self.N = N
         self.Nt = Nt
         self.Nobs = Nobs
 
         np.random.seed(seed)
-        self.Tobs, self.Yobs = generate_dataset(N,Nt,Nobs)
+        self.Tobs, self.Yobs = generate_dataset(N,Nt,Nobs, irregular_rate = irregular_rate)
         self.label = (self.Yobs[:,5]>0.5).astype(float)
 
     def __len__(self):
@@ -55,7 +62,7 @@ class SimpleTrajDataset(Dataset):
 
 
 class SimpleTrajDataModule(pl.LightningDataModule):
-    def __init__(self,batch_size, seed, N,  noise_std,  num_workers = 4,  **kwargs):
+    def __init__(self,batch_size, seed, N,  noise_std,  num_workers = 4, irregular_rate = 1.,  **kwargs):
         
         super().__init__()
         self.batch_size = batch_size
@@ -65,10 +72,11 @@ class SimpleTrajDataModule(pl.LightningDataModule):
         self.train_shuffle = True
         self.noise_std = noise_std
         self.N = N
+        self.irregular_rate = irregular_rate
 
     def prepare_data(self):
 
-        dataset = SimpleTrajDataset(N = self.N, noise_std =  self.noise_std, seed = self.seed)       
+        dataset = SimpleTrajDataset(N = self.N, noise_std =  self.noise_std, seed = self.seed, irregular_rate= self.irregular_rate)       
         
         train_idx = np.arange(len(dataset))[:int(0.5*len(dataset))]
         val_idx = np.arange(len(dataset))[int(0.5*len(dataset)):]
@@ -117,4 +125,5 @@ class SimpleTrajDataModule(pl.LightningDataModule):
         parser.add_argument('--batch_size', type=int, default=128)
         parser.add_argument('--N', type=int, default=1000)
         parser.add_argument('--noise_std', type=float, default=0)
+        parser.add_argument('--irregular_rate', type=float, default=1.)
         return parser

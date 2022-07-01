@@ -19,7 +19,10 @@ def main(model_cls, init_model_cls, data_cls, args):
     dataset.prepare_data()
 
     api = wandb.Api()
-    run = api.run(args.init_run_id)
+    sweep = api.sweep(args.sweep_id)
+    runs = sweep.runs
+    run = [r for r in runs if r.config["seed"]==args.seed][0]
+    
     fname = [f.name for f in run.files() if "ckpt" in f.name][0]
     run.file(fname).download(replace = True, root = ".")
 
@@ -60,7 +63,7 @@ if __name__=="__main__":
     parser.add_argument('--early_stopping', default=20, type=int)
     parser.add_argument('--data_type', type = str, default = "SimpleTraj")
     parser.add_argument('--model_type', type = str, default = "CNODEClass")
-    parser.add_argument('--init_run_id', type = str, default = "edebrouwer/orthopoly/n2n275j9")
+    parser.add_argument('--sweep_id', type = str, default = "edebrouwer/orthopoly/5jtwbznd")
 
     partial_args, _ = parser.parse_known_args()
 

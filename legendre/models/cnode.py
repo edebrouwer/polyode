@@ -13,6 +13,7 @@ from torchdiffeq import odeint
 import numpy as np
 
 from sklearn.metrics import roc_auc_score
+from legendre.utils import str2bool
 
 def get_value_from_cn(cn):
     Nc = cn.shape[-1]
@@ -40,6 +41,8 @@ class CNODEmod(nn.Module):
                     self.A[n,k] = - (1/Delta)*((2*n+1)**(0.5))*((2*k+1)**(0.5)) * (-1)**(n-k)
 
         self.node = nn.Sequential(nn.Linear(Nc,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,input_dim))
+
+        self.uncertainty_fun = nn.Sequential(nn.Linear(Nc,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,1),nn.Sigmoid())
 
         self.corr_time = corr_time # time for the correction
         self.hidden_dim = hidden_dim
@@ -102,13 +105,17 @@ class CNODEmod(nn.Module):
         h = torch.zeros((Y.shape[0],self.hidden_dim), device = Y.device)
         current_time = 0
         non_corrected_preds = []
+        non_corrected_uncertainty = []
         non_corrected_times = []
         preds_vec = []
+        uncertainty_vec = []
         times_vec = []
+        preds_g_vec = []
         diff_h = 0
         for i_t, time in enumerate(times):
             h_proj, eval_times, h_pre, eval_times_post, h_post = self.forward_ode(time,current_time,h, eval_mode = eval_mode)
             preds = get_value_from_cn(h_proj)
+            uncertainty = self.uncertainty_fun(h_proj)
             
             #taking care of the observation transition 
             pred_pre = get_value_from_cn(h_pre)
@@ -118,24 +125,36 @@ class CNODEmod(nn.Module):
 
             if eval_mode:
                 preds_post = get_value_from_cn(h_post)
+                uncertainty_post = self.uncertainty_fun(h_post)
+
                 non_corrected_preds.append(torch.cat([preds,preds_post])[1:])
+                non_corrected_uncertainty.append(torch.cat([uncertainty,uncertainty_post])[1:])
                 non_corrected_times.append(torch.cat([eval_times,eval_times_post])[1:])
                 
                 preds_update = get_value_from_cn(h_update)
                 eval_times = torch.cat([eval_times,update_eval_times])
                 preds = torch.cat([preds,preds_update])
 
+                preds_g_pre = self.node(h_proj)
+                preds_g_post = self.node(h_post)
+                preds_g = torch.cat([preds_g_pre,preds_g_post])
+                preds_g_vec.append(preds_g[1:])
+
 
             preds_vec.append(preds[1:])
             times_vec.append(eval_times[1:])
+            uncertainty_vec.append(uncertainty[1:])
             current_time = time
         out_pred = torch.cat(preds_vec).permute(1,0,2) # NxTxD
         out_times = torch.cat(times_vec)
+        out_uncertainty = torch.cat(uncertainty_vec).permute(1,0,2)
+
         if eval_mode:
             non_corrected_times = torch.cat(non_corrected_times)
             non_corrected_preds = torch.cat(non_corrected_preds).permute(1,0,2)
-            return out_pred, h, out_times, non_corrected_preds, non_corrected_times
-        return out_pred, h, out_times
+            non_corrected_uncertainty = torch.cat(non_corrected_uncertainty).permute(1,0,2)
+            return out_pred, h, out_times, non_corrected_preds, non_corrected_times, preds_g, non_corrected_uncertainty
+        return out_pred, h, out_times, out_uncertainty
 
 
 class CNODE(pl.LightningModule):
@@ -149,6 +168,7 @@ class CNODE(pl.LightningModule):
         weight_decay,
         Delta,
         corr_time,
+        uncertainty_mode,
         **kwargs
     ):
         super().__init__()
@@ -158,25 +178,35 @@ class CNODE(pl.LightningModule):
         #self.update_cell = ObsUpdate(output_dim,hidden_dim)
         self.output_mod = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,output_dim))
         self.Delta = Delta 
+        self.uncertainty_mode = uncertainty_mode
     
     def forward(self,times,Y,eval_mode = False):
         return self.node_model(times,Y, eval_mode = eval_mode)
+
+    def compute_loss(self,Y,preds,pred_uncertainty):
+        mse = (preds-Y).pow(2).mean()
+        loglik = (2*torch.log(2*torch.pi*pred_uncertainty.pow(2)) + (preds-Y).pow(2)/pred_uncertainty.pow(2)).sum(-1).mean()
+        if self.uncertainty_mode:
+            return loglik
+        else:
+            return mse
 
     def training_step(self,batch, batch_idx):
         T, Y, label = batch
         assert len(torch.unique(T)) == T.shape[1]
         times = torch.sort(torch.unique(T))[0]
-        preds, embedding, pred_times = self(times,Y)
-        loss = (preds-Y).pow(2).mean()
+        preds, embedding, pred_times, pred_uncertainty = self(times,Y)
+        loss = self.compute_loss(Y,preds,pred_uncertainty)
         self.log("train_loss",loss,on_epoch=True)
         return {"loss":loss}
 
     def validation_step(self,batch, batch_idx):
         T, Y, label = batch
+        import ipdb; ipdb.set_trace()
         assert len(torch.unique(T)) == T.shape[1]
         times = torch.sort(torch.unique(T))[0]
-        preds, embedding, pred_times = self(times,Y)
-        loss = (preds-Y).pow(2).mean()
+        preds, embedding, pred_times, pred_uncertainty = self(times,Y)
+        loss = self.compute_loss(Y,preds,pred_uncertainty)
         self.log("val_loss",loss,on_epoch=True)
         return {"Y":Y, "preds":preds, "T":T}
 
@@ -185,18 +215,19 @@ class CNODE(pl.LightningModule):
         Y_sample = outputs[0]["Y"]
 
         times = torch.sort(torch.unique(T_sample))[0]
-        preds, embedding, pred_times, non_corrected_preds, non_corrected_times = self(times,Y_sample, eval_mode = True)
+        preds, embedding, pred_times, non_corrected_preds, non_corrected_times, preds_g, non_corrected_uncertainty = self(times,Y_sample, eval_mode = True)
 
         Tmax = T_sample.max().cpu().numpy()
         Nc = embedding.shape[-1] #number of coefficients
         rec_span = np.linspace(Tmax-self.Delta,Tmax)
         recs = np.polynomial.legendre.legval((2/self.Delta)*(rec_span-Tmax) + 1, (embedding.cpu().numpy() * [(2*n+1)**0.5 for n in range(Nc)]).T)
 
-
         # ----- Plotting the filtered trajectories ---- 
         fig = go.Figure()
         fig.add_trace(go.Scatter(x = pred_times.cpu(),y = preds[0,:,0].cpu(),mode = 'lines',name='corrected - predictions'))
         fig.add_trace(go.Scatter(x = non_corrected_times.cpu(),y = non_corrected_preds[0,:,0].cpu(),mode = 'lines',name='predictions'))
+        fig.add_trace(go.Scatter(x = non_corrected_times.cpu().tolist() + non_corrected_times.cpu().tolist()[::-1],y = (non_corrected_preds[0,:,0].cpu()+non_corrected_uncertainty[0,:,0].cpu()).tolist() + (non_corrected_preds[0,:,0].cpu()-non_corrected_uncertainty[0,:,0].cpu()).tolist()[::-1],fill = "toself",name='predictions uncertainty'))
+        fig.add_trace(go.Scatter(x = non_corrected_times.cpu(),y = preds_g[0,:,0].cpu(),mode = 'lines',name='g-predictions'))
         fig.add_trace(go.Scatter(x = rec_span,y = recs[0],mode = 'lines',name='polynomial reconstruction'))
         fig.add_trace(go.Scatter(x = T_sample[0].cpu(),y = Y_sample[0,:,0].cpu(),mode = 'markers',name='observations'))
         
@@ -217,6 +248,7 @@ class CNODE(pl.LightningModule):
         parser.add_argument('--step_size', type=float, default=0.05)
         parser.add_argument('--Delta', type=float, default=5, help = "Memory span")
         parser.add_argument('--corr_time', type=float, default=0.5, help = "Correction span")
+        parser.add_argument('--uncertainty_mode', type=str2bool, default=False)
         return parser
 
 
