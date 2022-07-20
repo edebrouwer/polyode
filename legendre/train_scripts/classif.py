@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from legendre.models.cnode import CNODE, CNODEClassification
+from legendre.models.spline_cnode import SplineCNODEClass
 
 from legendre.utils import str2bool
 import pytorch_lightning as pl
@@ -13,26 +14,32 @@ import wandb
 
 from legendre.models.node import SequentialODE, SequentialODEClassification
 from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
+from legendre.data_utils.pMNIST_utils import pMNISTDataModule
+from legendre.data_utils.character_utils import CharacterTrajDataModule
+from legendre.models.rnn import RNN
 
 def main(model_cls, init_model_cls, data_cls, args):
     dataset = data_cls(**vars(args))
-    dataset.prepare_data()
+    #dataset.prepare_data()
+    if init_model_cls is not None:
+        api = wandb.Api()
+        sweep = api.sweep(args.sweep_id)
+        runs = sweep.runs
 
-    api = wandb.Api()
-    sweep = api.sweep(args.sweep_id)
-    runs = sweep.runs
-    run = [r for r in runs if r.config["seed"]==args.seed][0]
+        run = [r for r in runs if (r.config["seed"]==args.seed) and (r.config["irregular_rate"]==args.irregular_rate) and (r.config.get("output_fun",None)==args.output_fun)][0]
     
-    fname = [f.name for f in run.files() if "ckpt" in f.name][0]
-    run.file(fname).download(replace = True, root = ".")
+        fname = [f.name for f in run.files() if "ckpt" in f.name][0]
+        run.file(fname).download(replace = True, root = ".")
 
-    output_dim = 1 # hard coded for now
-    init_model = init_model_cls.load_from_checkpoint(fname)
-    os.remove(fname)
-    model = model_cls(output_dim = 1, init_model = init_model, **vars(args))
+        #output_dim = 1 # hard coded for now
+        init_model = init_model_cls.load_from_checkpoint(fname)
+        os.remove(fname)
+        model = model_cls(output_dim = 1, init_model = init_model, **vars(args))
+    else:
+        model = model_cls(**vars(args))
 
     logger = WandbLogger(
-        name=f"NODE_Class_{args.data_type}",
+        name=f"{args.model_type}_Class_{args.data_type}",
         project=f"orthopoly",
         entity="edebrouwer",
         log_model=False
@@ -59,24 +66,35 @@ if __name__=="__main__":
     parser.add_argument('--fold', default=0, type=int, help=' fold number to use')
     parser.add_argument('--gpus', default=1, type=int, help='the number of gpus to use to train the model')
     parser.add_argument('--random_seed', default=42, type=int)
-    parser.add_argument('--max_epochs', default=500, type=int)
+    parser.add_argument('--max_epochs', default=1000, type=int)
     parser.add_argument('--early_stopping', default=20, type=int)
     parser.add_argument('--data_type', type = str, default = "SimpleTraj")
-    parser.add_argument('--model_type', type = str, default = "CNODEClass")
-    parser.add_argument('--sweep_id', type = str, default = "edebrouwer/orthopoly/5jtwbznd")
+    parser.add_argument('--model_type', type = str, default = "CNODE")
+    parser.add_argument('--output_fun', type = str, default = None)
+    parser.add_argument('--sweep_id', type = str, default = "edebrouwer/orthopoly/1m0srjpz")
 
     partial_args, _ = parser.parse_known_args()
 
     
     if partial_args.data_type == "SimpleTraj":
         data_cls = SimpleTrajDataModule
+    elif partial_args.data_type == "pMNIST":
+        data_cls = pMNISTDataModule
+    elif partial_args.data_type == "Character":
+        data_cls = CharacterTrajDataModule
 
-    if partial_args.model_type == "CNODEClass":
+    if partial_args.model_type == "CNODE":
         model_cls = CNODEClassification
         init_model_cls = CNODE
+    if partial_args.model_type == "HermiteSpline":
+        model_cls = SplineCNODEClass
+        init_model_cls = None
     elif partial_args.model_type == "SequentialODE":
         model_cls = SequentialODEClassification
         init_model_cls = SequentialODE
+    elif partial_args.model_type == "RNN":
+        model_cls = RNN
+        init_model_cls = None
 
     parser = model_cls.add_model_specific_args(parser)
     parser = data_cls.add_dataset_specific_args(parser)

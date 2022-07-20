@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from legendre.data_utils.pMNIST_utils import pMNISTDataModule
 from legendre.models.cnode import CNODE
 
 from legendre.utils import str2bool
@@ -13,6 +14,7 @@ import torch
 from legendre.models.node import SequentialODE
 from legendre.models.cnode import CNODE
 from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
+from legendre.data_utils.character_utils import CharacterTrajDataModule
 
 def main(model_cls, data_cls, args):
     dataset = data_cls(**vars(args))
@@ -23,7 +25,7 @@ def main(model_cls, data_cls, args):
     #model.set_classes(num_classes_model=1) #For pretraining, only a single model
  
     logger = WandbLogger(
-        name=f"NODE_{args.data_type}",
+        name=f"{args.model_type}_{args.data_type}",
         project=f"orthopoly",
         entity="edebrouwer",
         log_model=False
@@ -60,7 +62,10 @@ if __name__=="__main__":
     
     if partial_args.data_type == "SimpleTraj":
         data_cls = SimpleTrajDataModule
-
+    elif partial_args.data_type == "pMNIST":
+        data_cls = pMNISTDataModule
+    elif partial_args.data_type == "Character":
+        data_cls = CharacterTrajDataModule
     if partial_args.model_type == "CNODE":
         model_cls = CNODE
     elif partial_args.model_type == "SequentialODE":

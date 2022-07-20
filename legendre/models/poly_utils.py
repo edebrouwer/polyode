@@ -11,3 +11,4 @@ def get_cns(X,y, degree):
     """
     cns = np.polynomial.legendre.legfit(X, y, deg = degree)
     return cns
+

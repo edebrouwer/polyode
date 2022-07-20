@@ -38,7 +38,7 @@ class SequentialODE(pl.LightningModule):
         self.update_cell = ObsUpdate(output_dim,hidden_dim)
         self.output_mod = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(),nn.Linear(hidden_dim,output_dim))
     
-    def forward(self,times, Y, eval_mode = False):
+    def forward(self,times, Y, mask, eval_mode = False):
         """
         eval mode returns the ode integrations at multiple times in between observations
         """
@@ -50,7 +50,9 @@ class SequentialODE(pl.LightningModule):
         for i_t, time in enumerate(times):
             h_proj, eval_times = self.node_model(time,current_time,h, eval_mode = eval_mode)
             preds = self.output_mod(h_proj)
-            h = self.update_cell(Y[:,i_t,:].float(),h_proj[-1])        
+
+            h_update = self.update_cell(Y[:,i_t,:].float(),h_proj[-1]) 
+            h = h_update * mask[:,i_t,None] + h_proj[-1] * (1-mask[:,i_t,None]) #update only the trajectories with observations       
             
             diff_h += (h-h_proj[-1]).pow(2).mean()
 
@@ -60,40 +62,48 @@ class SequentialODE(pl.LightningModule):
         out_pred = torch.cat(preds_vec).permute(1,0,2) # NxTxD
         out_times = torch.cat(times_vec)
         return out_pred, h, out_times, diff_h
-    
+
+    def compute_loss(self,Y,preds,mask):
+        mse = ((preds-Y).pow(2)*mask[...,None]).mean(-1).sum() / mask.sum()
+        #loglik = ((2*torch.log(2*torch.pi*pred_uncertainty.pow(2)) + (preds-Y).pow(2)/pred_uncertainty.pow(2))*(mask[...,None])).mean(-1).sum() / mask.sum()
+        #if self.uncertainty_mode:
+        #    return loglik, mse
+        #else:
+        #    return mse, mse
+        return mse
+
     def training_step(self,batch, batch_idx):
-        T, Y, label = batch
-        assert len(torch.unique(T)) == T.shape[1]
+        T, Y, mask, label = batch
         times = torch.sort(torch.unique(T))[0]
-        preds, embedding, pred_times, diff_h = self(times,Y)
-        loss_pred = (preds-Y).pow(2).mean()
+        preds, embedding, pred_times, diff_h = self(times,Y, mask)
+        loss_pred = self.compute_loss(Y,preds,mask)
         loss_h = diff_h
         loss = loss_pred + loss_h
         self.log("train_loss",loss,on_epoch=True)
         return {"loss":loss}
 
     def validation_step(self,batch, batch_idx):
-        T, Y, label = batch
-        assert len(torch.unique(T)) == T.shape[1]
+        T, Y, mask, label = batch
         times = torch.sort(torch.unique(T))[0]
-        preds, embedding, pred_times, diff_h = self(times,Y)
-        loss_pred = (preds-Y).pow(2).mean()
+        preds, embedding, pred_times, diff_h = self(times,Y, mask)
+        loss_pred = self.compute_loss(Y,preds,mask)
         loss_h = diff_h
         loss = loss_pred + 0.1*loss_h
         self.log("val_loss",loss,on_epoch=True)
-        return {"Y":Y, "preds":preds, "T":T}
+        return {"Y":Y, "preds":preds, "T":T, "mask":mask}
 
     def validation_epoch_end(self, outputs) -> None:
         T_sample = outputs[0]["T"]
         Y_sample = outputs[0]["Y"]
+        mask_sample = outputs[0]["mask"]
 
         times = torch.sort(torch.unique(T_sample))[0]
-        preds, embedding, pred_times, diff_h = self(times,Y_sample, eval_mode = True)
+        preds, embedding, pred_times, diff_h = self(times,Y_sample, mask_sample, eval_mode = True)
 
         # ----- Plotting the filtered trajectories ---- 
         fig = go.Figure()
         fig.add_trace(go.Scatter(x = pred_times.cpu(),y = preds[0,:,0].cpu(),mode = 'lines',name='predictions'))
-        fig.add_trace(go.Scatter(x = T_sample[0].cpu(),y = Y_sample[0,:,0].cpu(),mode = 'markers',name='observations'))
+        fig.add_trace(go.Scatter(x = T_sample.cpu()[mask_sample[0]==1],y = Y_sample[0,:,0].cpu()[mask_sample[0]==1],mode = 'markers',name='observations'))
         
         self.logger.experiment.log({"chart":fig})
         # ---------------------------------------------
@@ -127,25 +137,23 @@ class SequentialODEClassification(pl.LightningModule):
         self.embedding_model.freeze()
         self.classif_model = nn.Sequential(nn.Linear(hidden_dim,hidden_dim),nn.ReLU(), nn.Linear(hidden_dim,1))
 
-    def forward(self,times,Y,eval_mode = False):
-        _, embedding, _, _ = self.embedding_model(times,Y)
+    def forward(self,times,Y,mask, eval_mode = False):
+        _, embedding, _, _ = self.embedding_model(times,Y, mask)
         preds = self.classif_model(embedding)
         return preds
 
     def training_step(self,batch, batch_idx):
-        T, Y, label = batch
-        assert len(torch.unique(T)) == T.shape[1]
+        T, Y, mask, label = batch
         times = torch.sort(torch.unique(T))[0]
-        preds = self(times,Y)
+        preds = self(times,Y, mask)[:,0]
         loss = torch.nn.BCEWithLogitsLoss()(preds.double(),label)
         self.log("train_loss",loss,on_epoch=True)
         return {"loss":loss}
 
     def validation_step(self,batch, batch_idx):
-        T, Y, label = batch
-        assert len(torch.unique(T)) == T.shape[1]
+        T, Y, mask, label = batch
         times = torch.sort(torch.unique(T))[0]
-        preds = self(times,Y)
+        preds = self(times,Y, mask)[:,0]
         loss = torch.nn.BCEWithLogitsLoss()(preds.double(),label)
         self.log("val_loss",loss,on_epoch=True)
         return {"Y":Y, "preds":preds, "T":T, "labels":label}
