@@ -21,4 +21,4 @@ module load python/3.9.10
 # put your command here
 cd ~/Projects/Legendre/legendre/train_scripts/
 
-poetry run wandb agent edebrouwer/orthopoly/au7yi3hr
+poetry run wandb agent edebrouwer/orthopoly/t77q79lw

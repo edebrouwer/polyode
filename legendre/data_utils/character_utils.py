@@ -79,6 +79,7 @@ class CharacterTraj(Dataset):
         self.xobs = torch.linspace(0,10,t_len) + 0.1
         self.labels = self.targets.astype(int)
         self.mask = np.random.binomial(1,irregular_rate,size = (N,t_len)).astype(bool)
+        self.mask[:,-1] = True #last element always observed
 
         self.sequences[~self.mask] = 0
 
@@ -88,6 +89,44 @@ class CharacterTraj(Dataset):
 
         self.kwargs = kwargs
         self.pre_compute_ode = pre_compute_ode
+
+
+
+        if kwargs.get("bridge_ode",False):
+            self.bridge_ode = True
+            ids_vec = []
+            ys_vec = []
+            ts_vec = []
+            mask_vec = []
+            max_len = 0
+            for idx in range(N):
+                id0s = np.where(self.mask[idx]==1)[0][::2]
+                id1s = id0s[1:]
+                id0s = id0s[:-1]
+                idmids = np.where(self.mask[idx]==1)[0][1::2][:len(id1s)]
+                t0s = self.xobs[id0s]
+                t1s = self.xobs[id1s]
+                tmids = self.xobs[idmids]
+                y0s = self.sequences[idx,id0s,:]
+                y1s = self.sequences[idx,id1s,:]
+                ymids = self.sequences[idx,idmids,:]
+                ids = np.concatenate((id0s[:,None],id1s[:,None],idmids[:,None]),axis = 1)
+                ts = np.concatenate((t0s[:,None],t1s[:,None],tmids[:,None]),axis = 1)
+                ys = np.concatenate((y0s,y1s,ymids),axis = 1)
+                ids_vec.append(torch.Tensor(ids))
+                ts_vec.append(torch.Tensor(ts))
+                ys_vec.append(torch.Tensor(ys))
+                mask_vec.append(torch.ones(len(ts)))
+                if len(ts)>max_len:
+                    max_len = len(ts)
+            self.ts = torch.nn.utils.rnn.pad_sequence(ts_vec,batch_first = True).numpy()
+            self.ids = torch.nn.utils.rnn.pad_sequence(ids_vec,batch_first = True).numpy()
+            self.ys = torch.nn.utils.rnn.pad_sequence(ys_vec,batch_first = True).numpy()
+            self.mask_ids = torch.nn.utils.rnn.pad_sequence(mask_vec,batch_first = True).numpy()
+        else:
+            self.bridge_ode = False
+            
+
 
     def pre_compute_ode_embeddings(self):
         idxs = torch.chunk(torch.arange(self.sequences.shape[0]),20)
@@ -106,11 +145,18 @@ class CharacterTraj(Dataset):
     def __getitem__(self,idx):
         if self.spline_mode:
             if self.pre_compute_ode:
-                return {"Tobs":self.xobs, "Yobs":self.sequences[idx,:,0], "mask":self.mask[idx], "label":self.labels[idx], "coeffs":self.coeffs[idx], "embeddings":self.embeddings[idx]}
+                return_dict =  {"Tobs":self.xobs, "Yobs":self.sequences[idx,:,0], "mask":self.mask[idx], "label":self.labels[idx], "coeffs":self.coeffs[idx], "embeddings":self.embeddings[idx]}
             else:
-                return {"Tobs":self.xobs, "Yobs":self.sequences[idx,:,0], "mask":self.mask[idx], "label":self.labels[idx], "coeffs":self.coeffs[idx]}
+                return_dict =  {"Tobs":self.xobs, "Yobs":self.sequences[idx,:,0], "mask":self.mask[idx], "label":self.labels[idx], "coeffs":self.coeffs[idx]}
         else:
-            return {"Tobs":self.xobs, "Yobs":self.sequences[idx], "mask":self.mask[idx], "label":self.labels[idx]}
+            return_dict =  {"Tobs":self.xobs, "Yobs":self.sequences[idx], "mask":self.mask[idx], "label":self.labels[idx]}
+
+        if self.bridge_ode:
+            extra_dict = {"ts":self.ts[idx],"ids":self.ids[idx],"ys":self.ys[idx],"mask_ids":self.mask_ids[idx]}
+            return_dict.update(extra_dict)
+        return return_dict
+
+
 
 class CharacterTrajDataModule(pl.LightningDataModule):
     def __init__(self,batch_size, random_seed, num_workers = 4, irregular_rate = 1., spline_mode = False, pre_compute_ode = False, **kwargs):
