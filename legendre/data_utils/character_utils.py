@@ -18,6 +18,7 @@ import torch.nn as nn
 
 from legendre import DATA_DIR
 
+#Check for rosetta
 
 def pad_irregular_characters(df):
     stacked_list = []
@@ -56,13 +57,13 @@ class CharacterTraj(Dataset):
     def __init__(self,train, irregular_rate = 1., spline_mode = False, pre_compute_ode = False, **kwargs):
         super().__init__()
         
-        if train:
-            path = os.path.join(DATA_DIR,"CharacterTraj","CharacterTrajectories_TRAIN.ts") 
-        else:
-            path = os.path.join(DATA_DIR,"CharacterTraj","CharacterTrajectories_TEST.ts") 
+        #if train:
+        #    path = os.path.join(DATA_DIR,"CharacterTraj","CharacterTrajectories_TRAIN.ts") 
+        #else:
+        #    path = os.path.join(DATA_DIR,"CharacterTraj","CharacterTrajectories_TEST.ts") 
 
 
-        df_x, df_y = load_from_tsfile(path)
+        #df_x, df_y = load_from_tsfile(path)
         
         #self.data = to_tensor(df_x)
         #self.data = pad_irregular_characters(df_x)
@@ -159,23 +160,26 @@ class CharacterTraj(Dataset):
 
 
 class CharacterTrajDataModule(pl.LightningDataModule):
-    def __init__(self,batch_size, random_seed, num_workers = 4, irregular_rate = 1., spline_mode = False, pre_compute_ode = False, **kwargs):
+    def __init__(self,batch_size, seed, num_workers = 4, irregular_rate = 1., spline_mode = False, pre_compute_ode = False, **kwargs):
         
         super().__init__()
         self.batch_size = batch_size
-        self.seed = random_seed
+        self.seed = seed
         self.num_workers = num_workers
         self.irregular_rate = irregular_rate
         self.spline_mode = spline_mode
         self.kwargs = kwargs
         self.pre_compute_ode = pre_compute_ode
+        self.seed = seed
 
     def prepare_data(self):
 
         dataset = CharacterTraj(train = True, irregular_rate = self.irregular_rate, spline_mode = self.spline_mode, **self.kwargs)
         
-        self.train_idx = np.arange(len(dataset))[:int(0.7*len(dataset))]
-        self.val_idx = np.arange(len(dataset))[int(0.7*len(dataset)):]
+        np.random.seed(seed= self.seed)
+        idx_full = np.random.permutation(len(dataset))
+        self.train_idx = idx_full[:int(0.7*len(dataset))]
+        self.val_idx = idx_full[int(0.7*len(dataset)):]
         
         test_dataset = CharacterTraj(train = False, irregular_rate = self.irregular_rate, spline_mode = self.spline_mode, **self.kwargs)
 
@@ -230,6 +234,7 @@ class CharacterTrajDataModule(pl.LightningDataModule):
         import argparse
         parser = argparse.ArgumentParser(parents=[parent], add_help=False)
         parser.add_argument('--num_workers', type=int, default=4)
+        parser.add_argument('--seed', type=int, default=42)
         parser.add_argument('--batch_size', type=int, default=128)
         parser.add_argument('--num_sequences', type=int, default=4, help = "Number of images per sample")
         parser.add_argument('--irregular_rate', type=float, default=1.)

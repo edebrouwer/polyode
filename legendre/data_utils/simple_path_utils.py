@@ -26,6 +26,7 @@ def generate_path(phase, Nt, Nobs, irregular_rate=1):
     label = (yobs[5] > 0.5).astype(float)
     mask = np.random.binomial(
         1, irregular_rate, size=xobs.shape[0]).astype(bool)
+
     yobs[~mask] = np.zeros_like(yobs[~mask])
 
     return x, y, xobs, yobs, label, mask
@@ -96,7 +97,7 @@ def generate_spline_dataset(N, Nt, Nobs, irregular_rate):
         phase = 2*np.random.randn()*np.pi
         x, y, xobs, yobs, label, mask = generate_path(
             phase, Nt, Nobs, irregular_rate=irregular_rate)
-
+        
         coeffs = get_hermite_spline(xobs, yobs, mask)
 
         Xobs.append(xobs)
@@ -223,8 +224,6 @@ class SimpleTrajDataset(Dataset):
             embedding = spline_ode.integrate_ode(torch.Tensor(self.Tobs[0]).cuda(), torch.Tensor(
                 self.Yobs[idx]).cuda(), torch.Tensor(self.masks[idx]).cuda(), torch.Tensor(self.coeffs[idx]).cuda())
             embedding_list.append(embedding.cpu())
-            import ipdb
-            ipdb.set_trace()
         self.embeddings = torch.cat(embedding_list)
         self.pre_compute_ode = True
 
@@ -237,7 +236,10 @@ class SimpleTrajDataset(Dataset):
         Yobs : N x T x D
         """
         if self.spline_mode:
-            return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "label": self.labels[idx], "mask": self.masks[idx], "coeffs": self.coeffs[idx]}
+            if self.pre_compute_ode:
+                return {"Tobs":self.Tobs[idx], "Yobs":self.Yobs[idx], "mask":self.masks[idx], "label":self.labels[idx], "coeffs":self.coeffs[idx], "embeddings":self.embeddings[idx]}
+            else:
+                return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "label": self.labels[idx], "mask": self.masks[idx], "coeffs": self.coeffs[idx]}
         else:
             return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "label": self.labels[idx], "mask": self.masks[idx]}
 
