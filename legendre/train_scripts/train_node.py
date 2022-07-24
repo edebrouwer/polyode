@@ -14,6 +14,7 @@ import torch
 from legendre.models.node import SequentialODE
 from legendre.models.cnode import CNODE
 from legendre.models.cnode_ext import CNODExt
+from legendre.models.node_ext import NODExt
 from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
 from legendre.data_utils.character_utils import CharacterTrajDataModule
 
@@ -77,6 +78,8 @@ if __name__ == "__main__":
         model_cls = SequentialODE
     elif partial_args.model_type == "CNODExt":
         model_cls = CNODExt
+    elif partial_args.model_type == "NODExt":
+        model_cls = NODExt
     parser = model_cls.add_model_specific_args(parser)
     parser = data_cls.add_dataset_specific_args(parser)
     args = parser.parse_args()
