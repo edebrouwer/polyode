@@ -231,6 +231,10 @@ class CNODExt(pl.LightningModule):
     def forward(self, times, Y, mask, eval_mode=False, bridge_info=None):
         return self.node_model(times, Y, mask, eval_mode=eval_mode, bridge_info=bridge_info)
 
+    def get_embedding(self, times, Y, mask, eval_mode=False):
+        _, _, _, embedding = self(times, Y, mask, eval_mode=eval_mode)
+        return embedding
+
     def compute_loss(self, Y, preds, mask):
         mse = ((preds-Y).pow(2)*mask[..., None]).mean(-1).sum() / mask.sum()
         return mse
@@ -240,7 +244,7 @@ class CNODExt(pl.LightningModule):
             times, Y, mask, label, ids, ts, ys, mask_ids = batch
             return times, Y, mask, label, (ids, ts, ys, mask_ids)
         else:
-            times, Y, mask, label = batch
+            times, Y, mask, label, _ = batch
             return times, Y, mask, label, None
 
     def training_step(self, batch, batch_idx):
@@ -324,4 +328,92 @@ class CNODExt(pl.LightningModule):
         parser.add_argument('--bridge_ode', type=str2bool, default=False)
         parser.add_argument('--predict_from_cn', type=str2bool, default=True,
                             help="if true, the losses are computed on the prediction from the driver ode, not the polynomial reconstruction")
+        return parser
+
+
+class CNODExtClassification(pl.LightningModule):
+    def __init__(self, lr,
+                 hidden_dim,
+                 weight_decay,
+                 init_model,
+                 pre_compute_ode=False,
+                 **kwargs
+                 ):
+
+        super().__init__()
+        self.save_hyperparameters()
+        self.embedding_model = init_model
+        self.embedding_model.freeze()
+        self.pre_compute_ode = pre_compute_ode
+
+        if self.hparams["data_type"] == "pMNIST":
+            self.loss_class = torch.nn.CrossEntropyLoss()
+            output_dim = 10
+        elif self.hparams["data_type"] == "Character":
+            self.loss_class = torch.nn.CrossEntropyLoss()
+            output_dim = 20
+        else:
+            self.loss_class = torch.nn.BCEWithLogitsLoss()
+            output_dim = 1
+
+        self.classif_model = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, output_dim))
+
+    def forward(self, times, Y, mask, coeffs, eval_mode=False):
+
+        if self.pre_compute_ode:
+            embeddings = coeffs
+        else:
+            _, _, _, embedding = self.embedding_model(
+                times, Y, mask)
+        preds = self.classif_model(embeddings)
+        return preds
+
+        preds = self.classif_model(embedding)
+        return preds
+
+    def training_step(self, batch, batch_idx):
+        times, Y, mask, label, embeddings = batch
+        preds = self(times, Y, mask, embeddings)
+        if preds.shape[-1] == 1:
+            preds = preds[:, 0]
+            loss = self.loss_class(preds.double(), label)
+        else:
+            loss = self.loss_class(preds.double(), label.long())
+        self.log("train_loss", loss, on_epoch=True)
+        return {"loss": loss}
+
+    def validation_step(self, batch, batch_idx):
+        times, Y, mask, label, embeddings = batch
+        preds = self(times, Y, mask, embeddings)
+        if preds.shape[-1] == 1:
+            preds = preds[:, 0]
+            loss = self.loss_class(preds.double(), label)
+        else:
+            loss = self.loss_class(preds.double(), label.long())
+        self.log("val_loss", loss, on_epoch=True)
+        return {"Y": Y, "preds": preds, "T": times, "labels": label}
+
+    def validation_epoch_end(self, outputs):
+        preds = torch.cat([x["preds"] for x in outputs])
+        labels = torch.cat([x["labels"] for x in outputs])
+        if (self.hparams["data_type"] == "pMNIST") or (self.hparams["data_type"] == "Character"):
+            preds = torch.nn.functional.softmax(preds, dim=-1).argmax(-1)
+            accuracy = accuracy_score(
+                labels.long().cpu().numpy(), preds.cpu().numpy())
+            self.log("val_acc", accuracy, on_epoch=True)
+        else:
+            auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
+            self.log("val_auc", auc, on_epoch=True)
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.classif_model.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+
+    @classmethod
+    def add_model_specific_args(cls, parent):
+        import argparse
+        parser = argparse.ArgumentParser(parents=[parent], add_help=False)
+        parser.add_argument('--hidden_dim', type=int, default=32)
+        parser.add_argument('--lr', type=float, default=0.001)
+        parser.add_argument('--weight_decay', type=float, default=0.)
         return parser

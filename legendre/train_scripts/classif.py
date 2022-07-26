@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from legendre.models.cnode import CNODE, CNODEClassification
+from legendre.models.cnode_ext import CNODExt, CNODExtClassification
 from legendre.models.spline_cnode import SplineCNODEClass
 
 from legendre.utils import str2bool
@@ -18,24 +19,28 @@ from legendre.data_utils.pMNIST_utils import pMNISTDataModule
 from legendre.data_utils.character_utils import CharacterTrajDataModule
 from legendre.models.rnn import RNN
 
+
 def main(model_cls, init_model_cls, data_cls, args):
-    dataset = data_cls(**vars(args))
-    #dataset.prepare_data()
+    # dataset.prepare_data()
     if init_model_cls is not None:
         api = wandb.Api()
         sweep = api.sweep(args.sweep_id)
         runs = sweep.runs
 
-        run = [r for r in runs if (r.config["seed"]==args.seed) and (r.config["irregular_rate"]==args.irregular_rate) and (r.config.get("output_fun",None)==args.output_fun)][0]
-    
-        fname = [f.name for f in run.files() if "ckpt" in f.name][0]
-        run.file(fname).download(replace = True, root = ".")
+        run = [r for r in runs if (r.config["seed"] == args.seed) and (
+            r.config["irregular_rate"] == args.irregular_rate) and (r.config.get("output_fun", None) == args.output_fun)][0]
 
-        #output_dim = 1 # hard coded for now
+        fname = [f.name for f in run.files() if "ckpt" in f.name][0]
+        run.file(fname).download(replace=True, root=".")
+
+        # output_dim = 1 # hard coded for now
         init_model = init_model_cls.load_from_checkpoint(fname)
         os.remove(fname)
-        model = model_cls(output_dim = 1, init_model = init_model, **vars(args))
+        model = model_cls(output_dim=1, init_model=init_model, **vars(args))
+
+        dataset = data_cls(**vars(args), init_model=init_model)
     else:
+        dataset = data_cls(**vars(args))
         model = model_cls(**vars(args))
 
     logger = WandbLogger(
@@ -44,38 +49,41 @@ def main(model_cls, init_model_cls, data_cls, args):
         entity="edebrouwer",
         log_model=False
     )
-   
+
     checkpoint_cb = ModelCheckpoint(
         dirpath=logger.experiment.dir,
         monitor='val_loss',
         mode='min',
         verbose=True
     )
-    early_stopping_cb = EarlyStopping(monitor="val_loss", patience=args.early_stopping)
+    early_stopping_cb = EarlyStopping(
+        monitor="val_loss", patience=args.early_stopping)
 
-    trainer = pl.Trainer(gpus = args.gpus, logger = logger, callbacks = [checkpoint_cb, early_stopping_cb], max_epochs = args.max_epochs)
-    trainer.fit(model, datamodule = dataset)
+    trainer = pl.Trainer(gpus=args.gpus, logger=logger, callbacks=[
+                         checkpoint_cb, early_stopping_cb], max_epochs=args.max_epochs)
+    trainer.fit(model, datamodule=dataset)
 
     checkpoint_path = checkpoint_cb.best_model_path
-    
 
-if __name__=="__main__":
-    
+
+if __name__ == "__main__":
+
     parser = ArgumentParser()
 
-    parser.add_argument('--fold', default=0, type=int, help=' fold number to use')
-    parser.add_argument('--gpus', default=1, type=int, help='the number of gpus to use to train the model')
-    parser.add_argument('--random_seed', default=42, type=int)
+    parser.add_argument('--fold', default=0, type=int,
+                        help=' fold number to use')
+    parser.add_argument('--gpus', default=1, type=int,
+                        help='the number of gpus to use to train the model')
     parser.add_argument('--max_epochs', default=1000, type=int)
     parser.add_argument('--early_stopping', default=50, type=int)
-    parser.add_argument('--data_type', type = str, default = "SimpleTraj")
-    parser.add_argument('--model_type', type = str, default = "CNODE")
-    parser.add_argument('--output_fun', type = str, default = None)
-    parser.add_argument('--sweep_id', type = str, default = "edebrouwer/orthopoly/1m0srjpz")
+    parser.add_argument('--data_type', type=str, default="SimpleTraj")
+    parser.add_argument('--model_type', type=str, default="CNODE")
+    parser.add_argument('--output_fun', type=str, default=None)
+    parser.add_argument('--sweep_id', type=str,
+                        default="edebrouwer/orthopoly/1m0srjpz")
 
     partial_args, _ = parser.parse_known_args()
 
-    
     if partial_args.data_type == "SimpleTraj":
         data_cls = SimpleTrajDataModule
     elif partial_args.data_type == "pMNIST":
@@ -86,6 +94,9 @@ if __name__=="__main__":
     if partial_args.model_type == "CNODE":
         model_cls = CNODEClassification
         init_model_cls = CNODE
+    if partial_args.model_type == "CNODExt":
+        model_cls = CNODExtClassification
+        init_model_cls = CNODExt
     if partial_args.model_type == "HermiteSpline":
         model_cls = SplineCNODEClass
         init_model_cls = None

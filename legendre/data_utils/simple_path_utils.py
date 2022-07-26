@@ -97,7 +97,7 @@ def generate_spline_dataset(N, Nt, Nobs, irregular_rate):
         phase = 2*np.random.randn()*np.pi
         x, y, xobs, yobs, label, mask = generate_path(
             phase, Nt, Nobs, irregular_rate=irregular_rate)
-        
+
         coeffs = get_hermite_spline(xobs, yobs, mask)
 
         Xobs.append(xobs)
@@ -133,16 +133,15 @@ def collate_irregular_batch(batch):
 
     if "coeffs" in batch[0]:
         coeffs = np.stack([b["coeffs"] for b in batch])
-        if "embeddings" in batch[0]:
-            embeddings = np.stack([b["embeddings"] for b in batch])
-            return_tuple = (torch.Tensor(unique_times), torch.Tensor(
-                Y_obs), torch.Tensor(masks), labels, torch.Tensor(embeddings))
-        else:
-            return_tuple = (torch.Tensor(unique_times), torch.Tensor(
-                Y_obs), torch.Tensor(masks), labels, torch.Tensor(coeffs))
+        return_tuple = (torch.Tensor(unique_times), torch.Tensor(
+            Y_obs), torch.Tensor(masks), labels, torch.Tensor(coeffs))
+    elif "embeddings" in batch[0]:
+        embeddings = np.stack([b["embeddings"] for b in batch])
+        return_tuple = (torch.Tensor(unique_times), torch.Tensor(
+            Y_obs), torch.Tensor(masks), labels, torch.Tensor(embeddings))
     else:
         return_tuple = (torch.Tensor(unique_times), torch.Tensor(
-            Y_obs), torch.Tensor(masks), labels)
+            Y_obs), torch.Tensor(masks), labels, None)
 
     if "ts" in batch[0]:
         ts = np.stack([b["ts"] for b in batch])
@@ -214,16 +213,25 @@ class SimpleTrajDataset(Dataset):
         else:
             self.bridge_ode = False
 
-    def pre_compute_ode_embeddings(self):
+    def pre_compute_ode_embeddings(self, **kwargs):
         idxs = torch.chunk(torch.arange(self.Yobs.shape[0]), 20)
         embedding_list = []
         print("Pre-computing ODE Projection embeddings....")
-        spline_ode = SplineCNODEClass(**self.kwargs).cuda()
-        #self.coeffs = torch.stack(self.coeffs)
-        for idx in tqdm.tqdm(idxs):
-            embedding = spline_ode.integrate_ode(torch.Tensor(self.Tobs[0]).cuda(), torch.Tensor(
-                self.Yobs[idx]).cuda(), torch.Tensor(self.masks[idx]).cuda(), torch.Tensor(self.coeffs[idx]).cuda())
-            embedding_list.append(embedding.cpu())
+        if "init_model" in kwargs:
+            model = kwargs["init_model"]
+            model.eval()
+            model.cuda()
+            for idx in tqdm.tqdm(idxs):
+                embedding = model.get_embedding(torch.Tensor(self.Tobs[0]).cuda(), torch.Tensor(
+                    self.Yobs[idx]).cuda(), torch.Tensor(self.masks[idx]).cuda())
+                embedding_list.append(embedding.cpu())
+        else:
+            spline_ode = SplineCNODEClass(**self.kwargs).cuda()
+            #self.coeffs = torch.stack(self.coeffs)
+            for idx in tqdm.tqdm(idxs):
+                embedding = spline_ode.integrate_ode(torch.Tensor(self.Tobs[0]).cuda(), torch.Tensor(
+                    self.Yobs[idx]).cuda(), torch.Tensor(self.masks[idx]).cuda(), torch.Tensor(self.coeffs[idx]).cuda())
+                embedding_list.append(embedding.cpu())
         self.embeddings = torch.cat(embedding_list)
         self.pre_compute_ode = True
 
@@ -235,11 +243,10 @@ class SimpleTrajDataset(Dataset):
         Tobs dim : N x T
         Yobs : N x T x D
         """
-        if self.spline_mode:
-            if self.pre_compute_ode:
-                return {"Tobs":self.Tobs[idx], "Yobs":self.Yobs[idx], "mask":self.masks[idx], "label":self.labels[idx], "coeffs":self.coeffs[idx], "embeddings":self.embeddings[idx]}
-            else:
-                return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "label": self.labels[idx], "mask": self.masks[idx], "coeffs": self.coeffs[idx]}
+        if self.pre_compute_ode:
+            return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "mask": self.masks[idx], "label": self.labels[idx], "embeddings": self.embeddings[idx]}
+        elif self.spline_mode:
+            return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "label": self.labels[idx], "mask": self.masks[idx], "coeffs": self.coeffs[idx]}
         else:
             return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "label": self.labels[idx], "mask": self.masks[idx]}
 
@@ -267,7 +274,7 @@ class SimpleTrajDataModule(pl.LightningDataModule):
                                     irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, pre_compute_ode=self.pre_compute_ode, **self.kwargs)
 
         if self.pre_compute_ode:
-            dataset.pre_compute_ode_embeddings()
+            dataset.pre_compute_ode_embeddings(**self.kwargs)
 
         train_idx = np.arange(len(dataset))[:int(0.5*len(dataset))]
         val_idx = np.arange(len(dataset))[int(0.5*len(dataset)):]

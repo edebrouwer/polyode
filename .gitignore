@@ -1,0 +1,5 @@
+slurms/*.log
+slurms/outputs
+*__pycache__*
+*.ipynb_checkpoints*
+.vscode
