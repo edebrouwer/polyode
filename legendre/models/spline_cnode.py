@@ -34,12 +34,12 @@ def evaluate_spline(t, c, x_eval):
 
     if x_eval > (t[-1] + 0.1):  # x_eval must be less than the last break point
         print("Warning, overflow in the integration time")
-        y_ = torch.zeros(c.shape[0], device=c.device)
+        y_ = torch.zeros((c.shape[0], c.shape[-1]), device=c.device)
     else:
         x_shifted = (x_eval-t[interval_idx])[None]
-        y_ = c[..., interval_idx][:, -1] + c[..., interval_idx][:, -2] * x_shifted + c[...,
-                                                                                       interval_idx][:, -3] * x_shifted**2 + c[..., interval_idx][:, -4] * x_shifted**3
-    return y_[:, None]
+        y_ = c[:, -1, interval_idx, :] + c[:, -2, interval_idx, :] * x_shifted + c[:, -
+                                                                                   3, interval_idx, :] * x_shifted**2 + c[:, -4, interval_idx, :] * x_shifted**3
+    return y_
 
 
 class SplineCNODEClass(pl.LightningModule):
@@ -48,6 +48,7 @@ class SplineCNODEClass(pl.LightningModule):
                  weight_decay,
                  Nc,
                  Delta,
+                 num_dims,
                  **kwargs
                  ):
 
@@ -56,6 +57,7 @@ class SplineCNODEClass(pl.LightningModule):
 
         self.Nc = Nc
         self.Delta = Delta
+        self. num_dims = num_dims
 
         self.A = nn.Parameter(torch.ones((Nc, Nc)), requires_grad=False)
         self.B = nn.Parameter(torch.ones(
@@ -81,15 +83,21 @@ class SplineCNODEClass(pl.LightningModule):
             output_dim = 1
 
         self.classif_model = nn.Sequential(
-            nn.Linear(Nc, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, output_dim))
+            nn.Linear(self.num_dims * Nc, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, output_dim))
         self.pre_compute_ode = self.hparams.get("pre_compute_ode", False)
 
     def ode_fun(self, t, cn, evaluate_fun):
-        return torch.matmul(cn, self.A.T) + self.B[None, :] * evaluate_fun(t)
+        fun_preds = evaluate_fun(t)
+        cn_chunks = torch.chunk(cn, self.num_dims, 1)
+        outs = []
+        for dim in range(self.num_dims):
+            outs.append(torch.matmul(cn_chunks[dim], self.A.T) +
+                        self.B[None, :] * fun_preds[:, dim][:, None])
+        return torch.cat(outs, 1)
 
     def integrate_ode(self, times, Y, mask, coeffs):
         def eval_fun(t): return evaluate_spline(times, coeffs, t)
-        c0 = torch.zeros(Y.shape[0], self.Nc, device=Y.device)
+        c0 = torch.zeros(Y.shape[0], self.Nc * self.num_dims, device=Y.device)
         outputs = odeint(lambda t, cn: self.ode_fun(t, cn, eval_fun), c0, times,
                          method=self.hparams["method"], options={"step_size": self.hparams["delta_t"]})
 

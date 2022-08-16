@@ -63,7 +63,7 @@ class CharacterTraj(Dataset):
     Labels are buid by following some rules on these images.
     """
 
-    def __init__(self, train, irregular_rate=1., spline_mode=False, pre_compute_ode=False, **kwargs):
+    def __init__(self, train, irregular_rate=1., spline_mode=False, pre_compute_ode=False, multivariate=False, **kwargs):
         super().__init__()
 
         # if train:
@@ -83,7 +83,10 @@ class CharacterTraj(Dataset):
         #map_dict = dict(zip(np.unique(df_y),np.arange(len(np.unique(df_y)))))
         #self.targets = np.vectorize(map_dict.get)(df_y)
         # CURRENTLY ONLY SELECTING THE FIRST DIMENSION
-        self.sequences = self.data[:, ::2, 0][..., None]
+        if multivariate:
+            self.sequences = self.data[:, ::2, :]
+        else:
+            self.sequences = self.data[:, ::2, 0][..., None]
         #self.sequences = self.data[:,::2,:]
         t_len = self.sequences.shape[1]
         N = self.sequences.shape[0]
@@ -97,11 +100,16 @@ class CharacterTraj(Dataset):
 
         self.spline_mode = spline_mode
         if spline_mode:
-            self.coeffs = [torch.Tensor(get_hermite_spline(
-                self.xobs, self.sequences[n, :, 0], self.mask[n, :])) for n in range(N)]
+            self.coeffs = [torch.stack([torch.Tensor(get_hermite_spline(
+                self.xobs, self.sequences[n, :, dim], self.mask[n, :])) for dim in range(self.sequences.shape[-1])], -1) for n in range(N)]
 
         self.kwargs = kwargs
         self.pre_compute_ode = pre_compute_ode
+        self.multivariate = multivariate
+        if self.multivariate:
+            self.num_dims = 3
+        else:
+            self.num_dims = 1
 
         if kwargs.get("bridge_ode", False):
             self.bridge_ode = True
@@ -156,7 +164,10 @@ class CharacterTraj(Dataset):
                     self.sequences[idx]).cuda(), torch.Tensor(self.mask[idx]).cuda())
                 embedding_list.append(embedding.cpu())
         else:
-            spline_ode = SplineCNODEClass(**self.kwargs).cuda()
+            if "num_dims" not in self.kwargs:
+                self.kwargs["num_dims"] = self.num_dims
+            spline_ode = SplineCNODEClass(
+                **self.kwargs).cuda()
             self.coeffs = torch.stack(self.coeffs)
             for idx in tqdm.tqdm(idxs):
                 embedding = spline_ode.integrate_ode(torch.Tensor(self.xobs).cuda(), torch.Tensor(
@@ -187,7 +198,7 @@ class CharacterTraj(Dataset):
 
 
 class CharacterTrajDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size, seed, num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, **kwargs):
+    def __init__(self, batch_size=128, seed=42, num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, multivariate=False, **kwargs):
 
         super().__init__()
         self.batch_size = batch_size
@@ -198,11 +209,16 @@ class CharacterTrajDataModule(pl.LightningDataModule):
         self.kwargs = kwargs
         self.pre_compute_ode = pre_compute_ode
         self.seed = seed
+        self.multivariate = multivariate
+        if self.multivariate:
+            self.num_dims = 3
+        else:
+            self.num_dims = 1
 
     def prepare_data(self):
 
         dataset = CharacterTraj(train=True, irregular_rate=self.irregular_rate,
-                                spline_mode=self.spline_mode, **self.kwargs)
+                                spline_mode=self.spline_mode, multivariate=self.multivariate, **self.kwargs)
 
         np.random.seed(seed=self.seed)
         idx_full = np.random.permutation(len(dataset))
@@ -210,7 +226,7 @@ class CharacterTrajDataModule(pl.LightningDataModule):
         self.val_idx = idx_full[int(0.7*len(dataset)):]
 
         test_dataset = CharacterTraj(
-            train=False, irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, **self.kwargs)
+            train=False, irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, multivariate=self.multivariate, **self.kwargs)
 
         if self.pre_compute_ode:
             dataset.pre_compute_ode_embeddings(**self.kwargs)
@@ -271,6 +287,8 @@ class CharacterTrajDataModule(pl.LightningDataModule):
                             default=False, help="if True, use spline interpolation")
         parser.add_argument('--pre_compute_ode', type=str2bool, default=False,
                             help="if True, pre-computes the ODE embedding of the splines")
+        parser.add_argument('--multivariate', type=str2bool, default=False,
+                            help="if True, uses the multivariate version of the dataset")
         return parser
 
 

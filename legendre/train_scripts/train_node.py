@@ -15,16 +15,20 @@ from legendre.models.node import SequentialODE
 from legendre.models.cnode import CNODE
 from legendre.models.cnode_ext import CNODExt
 from legendre.models.node_ext import NODExt
+from legendre.models.hippo import HIPPO
+from legendre.models.rnn import RNN
+
 from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
 from legendre.data_utils.character_utils import CharacterTrajDataModule
+from legendre.data_utils.mimic_utils import MIMICDataModule
 
 
 def main(model_cls, data_cls, args):
     dataset = data_cls(**vars(args))
     dataset.prepare_data()
 
-    output_dim = 1  # hard coded for now
-    model = model_cls(output_dim=1, **vars(args))
+    output_dim = dataset.num_dims
+    model = model_cls(output_dim=output_dim, **vars(args))
     # model.set_classes(num_classes_model=1) #For pretraining, only a single model
 
     logger = WandbLogger(
@@ -36,6 +40,7 @@ def main(model_cls, data_cls, args):
 
     checkpoint_cb = ModelCheckpoint(
         dirpath=logger.experiment.dir,
+        filename='best_model',
         monitor='val_loss',
         mode='min',
         verbose=True
@@ -44,7 +49,7 @@ def main(model_cls, data_cls, args):
         monitor="val_loss", patience=args.early_stopping)
 
     trainer = pl.Trainer(gpus=args.gpus, logger=logger, callbacks=[
-                         checkpoint_cb, early_stopping_cb], max_epochs=args.max_epochs)
+                         checkpoint_cb, early_stopping_cb], max_epochs=args.max_epochs, gradient_clip_val=0.5)
     trainer.fit(model, datamodule=dataset)
 
     checkpoint_path = checkpoint_cb.best_model_path
@@ -59,7 +64,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpus', default=1, type=int,
                         help='the number of gpus to use to train the model')
     parser.add_argument('--random_seed', default=42, type=int)
-    parser.add_argument('--max_epochs', default=500, type=int)
+    parser.add_argument('--max_epochs', default=100, type=int)
     parser.add_argument('--early_stopping', default=50, type=int)
     parser.add_argument('--data_type', type=str, default="SimpleTraj")
     parser.add_argument('--model_type', type=str, default="SequentialODE")
@@ -72,6 +77,9 @@ if __name__ == "__main__":
         data_cls = pMNISTDataModule
     elif partial_args.data_type == "Character":
         data_cls = CharacterTrajDataModule
+    elif partial_args.data_type == "MIMIC":
+        data_cls = MIMICDataModule
+
     if partial_args.model_type == "CNODE":
         model_cls = CNODE
     elif partial_args.model_type == "SequentialODE":
@@ -80,6 +88,11 @@ if __name__ == "__main__":
         model_cls = CNODExt
     elif partial_args.model_type == "NODExt":
         model_cls = NODExt
+    elif partial_args.model_type == "Hippo":
+        model_cls = HIPPO
+    elif partial_args.model_type == "RNN":
+        model_cls = RNN
+
     parser = model_cls.add_model_specific_args(parser)
     parser = data_cls.add_dataset_specific_args(parser)
     args = parser.parse_args()

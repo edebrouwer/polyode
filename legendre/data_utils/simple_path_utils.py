@@ -98,7 +98,8 @@ def generate_spline_dataset(N, Nt, Nobs, irregular_rate):
         x, y, xobs, yobs, label, mask = generate_path(
             phase, Nt, Nobs, irregular_rate=irregular_rate)
 
-        coeffs = get_hermite_spline(xobs, yobs, mask)
+        coeffs = torch.stack(
+            [torch.Tensor(get_hermite_spline(xobs, yobs, mask))], -1)
 
         Xobs.append(xobs)
         Yobs.append(yobs)
@@ -128,8 +129,8 @@ def collate_irregular_batch(batch):
     assert((masks.sum(0) > 0).all())
     # unique_times = unique_times[used_times] #check if some times are never used.
 
-    Y_obs = Y_obs[:, used_times]
-    masks = masks[:, used_times]
+    #Y_obs = Y_obs[:, used_times]
+    #masks = masks[:, used_times]
 
     if "coeffs" in batch[0]:
         coeffs = np.stack([b["coeffs"] for b in batch])
@@ -151,11 +152,20 @@ def collate_irregular_batch(batch):
         return_tuple = return_tuple + \
             (torch.Tensor(ids), torch.Tensor(ts),
              torch.Tensor(ys), torch.Tensor(mask_ids))
+
+    if "Y_future" in batch[0]:
+        Y_future = np.stack([b["Y_future"] for b in batch])
+        Y_past = np.stack([b["Y_past"] for b in batch])
+        mask_future = np.stack([b["mask_future"] for b in batch])
+        mask_past = np.stack([b["mask_past"] for b in batch])
+        return_tuple = return_tuple + (torch.Tensor(Y_past), torch.Tensor(
+            Y_future), torch.Tensor(mask_past), torch.Tensor(mask_future))
+
     return return_tuple
 
 
 class SimpleTrajDataset(Dataset):
-    def __init__(self, N, Nt=200, Nobs=10, noise_std=0., seed=421, irregular_rate=1., spline_mode=False, pre_compute_ode=False, **kwargs):
+    def __init__(self, N, Nt=200, Nobs=10, noise_std=0., seed=421, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, **kwargs):
         super().__init__()
         self.N = N
         self.Nt = Nt
@@ -172,6 +182,8 @@ class SimpleTrajDataset(Dataset):
 
         self.kwargs = kwargs
         self.pre_compute_ode = pre_compute_ode
+        self.num_dims = 1
+        self.forecast_mode = forecast_mode
 
         if kwargs.get("bridge_ode", False):
             self.bridge_ode = True
@@ -226,6 +238,8 @@ class SimpleTrajDataset(Dataset):
                     self.Yobs[idx]).cuda(), torch.Tensor(self.masks[idx]).cuda())
                 embedding_list.append(embedding.cpu())
         else:
+            if "num_dims" not in self.kwargs:
+                self.kwargs["num_dims"] = self.num_dims
             spline_ode = SplineCNODEClass(**self.kwargs).cuda()
             #self.coeffs = torch.stack(self.coeffs)
             for idx in tqdm.tqdm(idxs):
@@ -247,12 +261,22 @@ class SimpleTrajDataset(Dataset):
             return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "mask": self.masks[idx], "label": self.labels[idx], "embeddings": self.embeddings[idx]}
         elif self.spline_mode:
             return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "label": self.labels[idx], "mask": self.masks[idx], "coeffs": self.coeffs[idx]}
+        elif self.forecast_mode:
+            Y_future = self.Yobs[idx].clone()
+            mask_future = self.masks[idx].clone()
+            mask_past = self.masks[idx].clone()
+            Y_past = self.Yobs[idx].clone()
+            Y_future[(0.8*self.Nobs):] = 0
+            Y_past[:(0.8*self.Nobs)] = 0
+            mask_future[(0.8*self.Nobs):] = 0
+            mask_past[:(0.8*self.Nobs)] = 0
+            return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "label": self.labels[idx], "mask": self.masks[idx], "Y_future": Y_future, "mask_future": mask_future, "Y_past": Y_past, "mask_past": mask_past}
         else:
             return {"Tobs": self.Tobs[idx], "Yobs": self.Yobs[idx], "label": self.labels[idx], "mask": self.masks[idx]}
 
 
 class SimpleTrajDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size, seed, N,  noise_std,  num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, **kwargs):
+    def __init__(self, batch_size=128, seed=42, N=1000,  noise_std=0.,  num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, **kwargs):
 
         super().__init__()
         self.batch_size = batch_size
@@ -267,6 +291,7 @@ class SimpleTrajDataModule(pl.LightningDataModule):
 
         self.pre_compute_ode = pre_compute_ode
         self.kwargs = kwargs
+        self.num_dims = 1
 
     def prepare_data(self):
 
@@ -332,4 +357,6 @@ class SimpleTrajDataModule(pl.LightningDataModule):
                             default=False, help="if True, use spline interpolation")
         parser.add_argument('--pre_compute_ode', type=str2bool, default=False,
                             help="if True, pre-computes the ODE embedding of the splines")
+        parser.add_argument('--forecast_mode', type=str2bool, default=False,
+                            help="if True, splits the sequence into a past and future part")
         return parser
