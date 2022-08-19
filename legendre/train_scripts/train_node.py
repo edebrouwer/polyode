@@ -17,10 +17,12 @@ from legendre.models.cnode_ext import CNODExt
 from legendre.models.node_ext import NODExt
 from legendre.models.hippo import HIPPO
 from legendre.models.rnn import RNN
+from legendre.models.simple_classif import SimpleClassif
 
 from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
 from legendre.data_utils.character_utils import CharacterTrajDataModule
 from legendre.data_utils.mimic_utils import MIMICDataModule
+from legendre.data_utils.lorenz_utils import LorenzDataModule
 
 
 def main(model_cls, data_cls, args):
@@ -64,7 +66,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpus', default=1, type=int,
                         help='the number of gpus to use to train the model')
     parser.add_argument('--random_seed', default=42, type=int)
-    parser.add_argument('--max_epochs', default=100, type=int)
+    parser.add_argument('--max_epochs', default=250, type=int)
     parser.add_argument('--early_stopping', default=50, type=int)
     parser.add_argument('--data_type', type=str, default="SimpleTraj")
     parser.add_argument('--model_type', type=str, default="SequentialODE")
@@ -79,6 +81,8 @@ if __name__ == "__main__":
         data_cls = CharacterTrajDataModule
     elif partial_args.data_type == "MIMIC":
         data_cls = MIMICDataModule
+    elif partial_args.data_type == "Lorenz":
+        data_cls = LorenzDataModule
 
     if partial_args.model_type == "CNODE":
         model_cls = CNODE
@@ -92,6 +96,8 @@ if __name__ == "__main__":
         model_cls = HIPPO
     elif partial_args.model_type == "RNN":
         model_cls = RNN
+    elif partial_args.model_type == "SimpleClassif":
+        model_cls = SimpleClassif
 
     parser = model_cls.add_model_specific_args(parser)
     parser = data_cls.add_dataset_specific_args(parser)

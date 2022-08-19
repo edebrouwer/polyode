@@ -76,7 +76,13 @@ class NODExtmod(nn.Module):
             _type_: _description_
         """
         if reverse:
-            h_out = odeint(self.reverse_ode_fun, cn, eval_times,
+            if self.auto_encoder:
+                h_out = odeint(self.ae_ode_fun, cn, eval_times,
+                           method=self.method, options={"step_size": self.delta_t})
+                pred = self.ae_out_fun(h_out)
+                return h_out, pred
+            else:
+                h_out = odeint(self.reverse_ode_fun, cn, eval_times,
                            method=self.method, options={"step_size": self.delta_t})
         else:
             h_out = odeint(self.ode_fun, cn, eval_times,
@@ -304,7 +310,7 @@ class NODExt(pl.LightningModule):
         parser.add_argument('--delta_t', type=float,
                             default=0.05, help="integration step size")
         parser.add_argument('--method', type=str,
-                            default="dopri5", help="integration method")
+                            default="implicit_adams", help="integration method")
         parser.add_argument('--output_fun', type=str, default="mlp",
                             help="what type of output function to use in the extended ode case")
         parser.add_argument('--uncertainty_mode', type=str2bool, default=False)

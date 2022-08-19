@@ -195,5 +195,5 @@ class SplineCNODEClass(pl.LightningModule):
         parser.add_argument('--delta_t', type=float,
                             default=0.05, help="integration step size")
         parser.add_argument('--method', type=str,
-                            default="dopri5", help="integration method")
+                            default="implicit_adams", help="integration method")
         return parser

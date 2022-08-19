@@ -19,34 +19,64 @@ from legendre.models.node import SequentialODE, SequentialODEClassification
 from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
 from legendre.data_utils.pMNIST_utils import pMNISTDataModule
 from legendre.data_utils.character_utils import CharacterTrajDataModule
+from legendre.data_utils.mimic_utils import MIMICDataModule
+from legendre.data_utils.lorenz_utils import LorenzDataModule
 from legendre.models.rnn import RNN, RNNClassification
+from legendre.models.hippo import HIPPO, HippoClassification
 
+
+def get_init_model(init_sweep_id, init_model_cls, irregular_rate, seed, multivariate):
+    api = wandb.Api()
+    sweep = api.sweep(init_sweep_id)
+    runs = sweep.runs
+    run = [r for r in runs if (r.config["seed"] == seed) and (
+            r.config["irregular_rate"] == irregular_rate) and (r.config.get("multivariate", False) == multivariate)][0]
+
+    fname = [f.name for f in run.files() if "best_model.ckpt" in f.name]
+    if len(fname) > 0:
+        fname = fname[0]
+        run.file(fname).download(replace=True, root=".")
+    else:
+        print("Wandb model not found, loading local checkpoint")
+        fname = os.path.join(".", "checkpoints",
+                                 run.name, "best_model.ckpt")
+
+        # output_dim = 1 # hard coded for now
+    checkpoint = torch.load(
+            fname, map_location=lambda storage, loc: storage)
+    checkpoint["hyper_parameters"].pop("callbacks", None)
+    checkpoint["hyper_parameters"].pop("logger", None)
+    checkpoint["hyper_parameters"].pop("wandb_id_file_path", None)
+    init_model = _load_state(init_model_cls, checkpoint) 
+    os.remove(fname)
+    return init_model
 
 def main(model_cls, init_model_cls, data_cls, args):
     # dataset.prepare_data()
     if init_model_cls is not None:
-        api = wandb.Api()
-        sweep = api.sweep(args.init_sweep_id)
-        runs = sweep.runs
-        run = [r for r in runs if (r.config["seed"] == args.seed) and (
-            r.config["irregular_rate"] == args.irregular_rate) and (r.config.get("multivariate", False) == dict(vars(args)).get("multivariate", False))][0]
+        init_model = get_init_model(args.init_sweep_id, init_model_cls, args.irregular_rate, args.seed, dict(vars(args)).get("multivariate",False))
+        #api = wandb.Api()
+        #sweep = api.sweep(args.init_sweep_id)
+        #runs = sweep.runs
+        #run = [r for r in runs if (r.config["seed"] == args.seed) and (
+        #    r.config["irregular_rate"] == args.irregular_rate) and (r.config.get("multivariate", False) == dict(vars(args)).get("multivariate", False))][0]
 
-        fname = [f.name for f in run.files() if "best_model.ckpt" in f.name]
-        if len(fname) > 0:
-            fname = fname[0]
-            run.file(fname).download(replace=True, root=".")
-        else:
-            print("Wandb model not found, loading local checkpoint")
-            fname = os.path.join(".", "checkpoints",
-                                 run.name, "best_model.ckpt")
+        #fname = [f.name for f in run.files() if "best_model.ckpt" in f.name]
+        #if len(fname) > 0:
+        #    fname = fname[0]
+        #    run.file(fname).download(replace=True, root=".")
+        #else:
+        #    print("Wandb model not found, loading local checkpoint")
+        #    fname = os.path.join(".", "checkpoints",
+        #                         run.name, "best_model.ckpt")
 
         # output_dim = 1 # hard coded for now
-        checkpoint = torch.load(
-            fname, map_location=lambda storage, loc: storage)
-        checkpoint["hyper_parameters"].pop("callbacks", None)
-        checkpoint["hyper_parameters"].pop("logger", None)
-        checkpoint["hyper_parameters"].pop("wandb_id_file_path", None)
-        init_model = _load_state(init_model_cls, checkpoint)
+        #checkpoint = torch.load(
+        #    fname, map_location=lambda storage, loc: storage)
+        #checkpoint["hyper_parameters"].pop("callbacks", None)
+        #checkpoint["hyper_parameters"].pop("logger", None)
+        #checkpoint["hyper_parameters"].pop("wandb_id_file_path", None)
+        #init_model = _load_state(init_model_cls, checkpoint)
         #init_model = init_model_cls._load_model_state(checkpoint)
 
         #init_model = init_model_cls.load_from_checkpoint(fname, strict=False)
@@ -106,6 +136,10 @@ if __name__ == "__main__":
         data_cls = pMNISTDataModule
     elif partial_args.data_type == "Character":
         data_cls = CharacterTrajDataModule
+    elif partial_args.data_type == "MIMIC":
+        data_cls = MIMICDataModule
+    elif partial_args.data_type == "Lorenz":
+        data_cls = LorenzDataModule
 
     if partial_args.model_type == "CNODE":
         model_cls = CNODEClassification
@@ -125,6 +159,9 @@ if __name__ == "__main__":
     elif partial_args.model_type == "RNN":
         model_cls = RNNClassification
         init_model_cls = RNN
+    elif partial_args.model_type == "Hippo":
+        model_cls = HippoClassification
+        init_model_cls = HIPPO
 
     parser = model_cls.add_model_specific_args(parser)
     parser = data_cls.add_dataset_specific_args(parser)

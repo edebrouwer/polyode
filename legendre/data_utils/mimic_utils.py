@@ -186,7 +186,8 @@ class MIMICDataset(Dataset):
         df_Y = pd.read_pickle(os.path.join(
             DATA_DIR, 'physionet.org', "processed", f"Ys_{fold_type}.pkl"))
 
-        cols = ["heart rate", "mean blood pressure"]
+        #TODO: add creatinine. Check feature importance of mortality.
+        cols = ["heart rate", "mean blood pressure", "diastolic blood pressure", "oxygen saturation","respiratory rate"]
         self.X = torch.from_numpy(to_3D_tensor(
             df_traj[cols]).astype(np.float32))
         self.labels = torch.from_numpy(
@@ -204,7 +205,7 @@ class MIMICDataset(Dataset):
         # only taking observations where all dimensions are observed
         self.mask = self.mask.all(-1).float()
         self.add_mask = np.random.binomial(
-            1, irregular_rate, size=(N, len(self.xobs)))
+            1, irregular_rate, size=(N, len(self.xobs))).astype(np.float32)
         self.mask = self.mask * self.add_mask
         self.sequences[self.mask == 0] = 0
 
@@ -269,7 +270,11 @@ class MIMICDataModule(pl.LightningDataModule):
         self.kwargs = kwargs
         self.pre_compute_ode = pre_compute_ode
         self.seed = seed
-        self.num_dims = 2
+        self.num_dims = 5
+        self.test_only = False
+
+    def set_test_only(self):
+        self.test_only = True
 
     def prepare_data(self):
 
@@ -282,8 +287,9 @@ class MIMICDataModule(pl.LightningDataModule):
             fold_type="test", irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, **self.kwargs)
 
         if self.pre_compute_ode:
-            train_dataset.pre_compute_ode_embeddings(**self.kwargs)
-            val_dataset.pre_compute_ode_embeddings(**self.kwargs)
+            if not self.test_only:
+                train_dataset.pre_compute_ode_embeddings(**self.kwargs)
+                val_dataset.pre_compute_ode_embeddings(**self.kwargs)
             test_dataset.pre_compute_ode_embeddings(**self.kwargs)
 
         self.train_batch_size = self.batch_size

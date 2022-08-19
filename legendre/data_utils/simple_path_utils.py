@@ -26,7 +26,7 @@ def generate_path(phase, Nt, Nobs, irregular_rate=1):
     label = (yobs[5] > 0.5).astype(float)
     mask = np.random.binomial(
         1, irregular_rate, size=xobs.shape[0]).astype(bool)
-
+    mask[-1] = True
     yobs[~mask] = np.zeros_like(yobs[~mask])
 
     return x, y, xobs, yobs, label, mask
@@ -63,6 +63,7 @@ def get_hermite_spline(xobs, yobs, mask):
     """
     dydx = np.concatenate(
         [(yobs[mask][1:]-yobs[mask][:-1])/(xobs[mask][1:]-xobs[mask][:-1]), np.zeros(1)])
+    
     spline = CubicHermiteSpline(x=xobs[mask], y=yobs[mask], dydx=dydx)
 
     y_ = spline(xobs[~mask])
@@ -293,6 +294,9 @@ class SimpleTrajDataModule(pl.LightningDataModule):
         self.kwargs = kwargs
         self.num_dims = 1
 
+    def set_test_only(self):
+        return
+        
     def prepare_data(self):
 
         dataset = SimpleTrajDataset(N=self.N, noise_std=self.noise_std, seed=self.seed,
@@ -301,8 +305,9 @@ class SimpleTrajDataModule(pl.LightningDataModule):
         if self.pre_compute_ode:
             dataset.pre_compute_ode_embeddings(**self.kwargs)
 
-        train_idx = np.arange(len(dataset))[:int(0.5*len(dataset))]
-        val_idx = np.arange(len(dataset))[int(0.5*len(dataset)):]
+        idx = np.random.permutation(len(dataset))
+        train_idx = idx[:int(0.5*len(dataset))]
+        val_idx = idx[int(0.5*len(dataset)):]
         test_idx = val_idx[int(len(val_idx)/2):]
         val_idx = val_idx[:int(len(val_idx)/2)]
 
