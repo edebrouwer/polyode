@@ -54,7 +54,8 @@ class SimpleClassif(pl.LightningModule):
                 output_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, class_output_dim))
 
     def forward(self, times, Y, mask, eval_mode=False):
-        x = Y[:,-1,:]
+        last_idx = mask.shape[1]-1-torch.flip(mask,(1,)).argmax(1)
+        x = torch.gather(Y,1,last_idx[:,None,...])[:,0]
         preds = self.classif_model(x)
         return preds, None, None, None
 
@@ -108,6 +109,36 @@ class SimpleClassif(pl.LightningModule):
         else:
             auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
             self.log("val_auc", auc, on_epoch=True)
+
+        return
+
+    def test_step(self, batch, batch_idx):
+        times, Y, mask, label, bridge_info = self.process_batch(batch)
+        preds, preds_traj, times_traj, cn_embedding = self(
+            times, Y, mask, eval_mode=True)
+
+        if preds.shape[-1] == 1:
+            preds = preds[:, 0]
+            loss = self.loss_class(preds.double(), label)
+        else:
+            loss = self.loss_class(preds.double(), label.long())
+
+        preds_class = None
+        self.log("test_loss", loss, on_epoch=True)
+        return {"Y": Y, "preds": preds, "T": times, "mask": mask, "label": label, "pred_class": preds, "cn_embedding": cn_embedding}
+
+    def test_epoch_end(self, outputs):
+        preds = torch.cat([x["pred_class"] for x in outputs])
+        labels = torch.cat([x["label"] for x in outputs])
+
+        if (self.hparams["data_type"] == "pMNIST") or (self.hparams["data_type"] == "Character"):
+            preds = torch.nn.functional.softmax(preds, dim=-1).argmax(-1)
+            accuracy = accuracy_score(
+                labels.long().cpu().numpy(), preds.cpu().numpy())
+            self.log("test_acc", accuracy, on_epoch=True)
+        else:
+            auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
+            self.log("test_auc", auc, on_epoch=True)
 
         return
 

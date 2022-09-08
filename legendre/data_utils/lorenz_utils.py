@@ -12,7 +12,7 @@ import tqdm
 from legendre.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch
 
 
-def generate_path(start, Nt, Nobs, irregular_rate=1):
+def generate_path(start, Nt, Nobs, irregular_rate=1, regression_mode = False):
     """
     Nt : Number of time points to simulate
     Nobs : Number of observations to select
@@ -68,8 +68,10 @@ def generate_path(start, Nt, Nobs, irregular_rate=1):
     ysobs = ys[temporal_mask==1]
     zsobs = zs[temporal_mask==1]
 
-
-    label = (zsobs[int(0.6*Nobs)] > 0.).astype(float)
+    if regression_mode:
+        label = zsobs[int(0.6*Nobs)]
+    else:
+        label = (zsobs[int(0.6*Nobs)] > 0.).astype(float)
     mask = np.random.binomial(
         1, irregular_rate, size=xobs.shape[0]).astype(bool)
     mask[-1] = 1
@@ -82,7 +84,7 @@ def generate_path(start, Nt, Nobs, irregular_rate=1):
     return xobs, yobs, label, mask
 
 
-def generate_dataset(N, Nt, Nobs, irregular_rate):
+def generate_dataset(N, Nt, Nobs, irregular_rate, regression_mode = False):
     Xobs = []
     Yobs = []
     labels = []
@@ -90,7 +92,7 @@ def generate_dataset(N, Nt, Nobs, irregular_rate):
     for n in range(N):
         start = np.abs(int(np.random.random()*10000-2*Nt))
         xobs, yobs, label, mask = generate_path(
-            start, Nt, Nobs, irregular_rate=irregular_rate)
+            start, Nt, Nobs, irregular_rate=irregular_rate, regression_mode = regression_mode)
 
         Xobs.append(xobs)
         Yobs.append(yobs)
@@ -101,7 +103,7 @@ def generate_dataset(N, Nt, Nobs, irregular_rate):
     return np.stack(Xobs), np.stack(Yobs), np.stack(labels), np.stack(masks)
 
 class LorenzDataset(Dataset):
-    def __init__(self, N, Nt=500, Nobs=20, noise_std=0., lorenz_dims = 3,seed=421, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, **kwargs):
+    def __init__(self, N, Nt=500, Nobs=20, noise_std=0., lorenz_dims = 3,seed=421, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False,  regression_mode = False, **kwargs):
         super().__init__()
         self.N = N
         self.Nt = Nt
@@ -109,7 +111,7 @@ class LorenzDataset(Dataset):
         self.spline_mode = spline_mode
 
         self.xobs, self.sequences, self.labels, self.masks = generate_dataset(
-                N, Nt, Nobs, irregular_rate=irregular_rate)
+                N, Nt, Nobs, irregular_rate=irregular_rate, regression_mode = regression_mode)
 
         self.sequences = self.sequences[:,:,:lorenz_dims]
         
@@ -121,6 +123,7 @@ class LorenzDataset(Dataset):
         self.pre_compute_ode = pre_compute_ode
         self.num_dims = lorenz_dims
         self.forecast_mode = forecast_mode
+        self.regression_mode = regression_mode
         
         self.bridge_ode = False
 
@@ -175,7 +178,7 @@ class LorenzDataset(Dataset):
 
 
 class LorenzDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size=128, seed=42, N=1000, lorenz_dims = 3, noise_std=0.,  num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, Nobs = 20, **kwargs):
+    def __init__(self, batch_size=128, seed=42, N=1000, lorenz_dims = 3, noise_std=0.,  num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, Nobs = 20, regression_mode = False,**kwargs):
 
         super().__init__()
         self.batch_size = batch_size
@@ -192,6 +195,7 @@ class LorenzDataModule(pl.LightningDataModule):
         self.pre_compute_ode = pre_compute_ode
         self.kwargs = kwargs
         self.num_dims = lorenz_dims
+        self.regression_mode = regression_mode
 
     
     def set_test_only(self):
@@ -200,7 +204,7 @@ class LorenzDataModule(pl.LightningDataModule):
     def prepare_data(self):
 
         dataset = LorenzDataset(N=self.N, Nobs = self.Nobs,noise_std=self.noise_std, seed=self.seed, lorenz_dims = self.num_dims,
-                                    irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, pre_compute_ode=self.pre_compute_ode, **self.kwargs)
+                                    irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, pre_compute_ode=self.pre_compute_ode, regression_mode = self.regression_mode, **self.kwargs)
 
         if self.pre_compute_ode:
             dataset.pre_compute_ode_embeddings(**self.kwargs)
@@ -265,5 +269,7 @@ class LorenzDataModule(pl.LightningDataModule):
         parser.add_argument('--pre_compute_ode', type=str2bool, default=False,
                             help="if True, pre-computes the ODE embedding of the splines")
         parser.add_argument('--forecast_mode', type=str2bool, default=False,
+                            help="if True, splits the sequence into a past and future part")
+        parser.add_argument('--regression_mode', type=str2bool, default=False,
                             help="if True, splits the sequence into a past and future part")
         return parser

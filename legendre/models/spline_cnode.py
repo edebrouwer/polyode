@@ -49,6 +49,7 @@ class SplineCNODEClass(pl.LightningModule):
                  Nc,
                  Delta,
                  num_dims,
+                 regression_mode = False,
                  **kwargs
                  ):
 
@@ -72,15 +73,20 @@ class SplineCNODEClass(pl.LightningModule):
                     self.A[n, k] = - (1/Delta)*((2*n+1)**(0.5)) * \
                         ((2*k+1)**(0.5)) * (-1)**(n-k)
 
-        if self.hparams["data_type"] == "pMNIST":
-            self.loss_class = torch.nn.CrossEntropyLoss()
-            output_dim = 10
-        elif self.hparams["data_type"] == "Character":
-            self.loss_class = torch.nn.CrossEntropyLoss()
-            output_dim = 20
-        else:
-            self.loss_class = torch.nn.BCEWithLogitsLoss()
+        self.regression_mode = regression_mode
+        if regression_mode:
+            self.loss_class = torch.nn.MSELoss()
             output_dim = 1
+        else:
+            if self.hparams["data_type"] == "pMNIST":
+                self.loss_class = torch.nn.CrossEntropyLoss()
+                output_dim = 10
+            elif self.hparams["data_type"] == "Character":
+                self.loss_class = torch.nn.CrossEntropyLoss()
+                output_dim = 20
+            else:
+                self.loss_class = torch.nn.BCEWithLogitsLoss()
+                output_dim = 1
 
         self.classif_model = nn.Sequential(
             nn.Linear(self.num_dims * Nc, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, output_dim))
@@ -117,66 +123,82 @@ class SplineCNODEClass(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         times, Y, mask, label, coeffs = batch
         preds = self(times, Y, mask, coeffs)
-        if preds.shape[-1] == 1:
-            preds = preds[:, 0]
-            loss = self.loss_class(preds.double(), label)
+        if self.regression_mode:
+            if len(label.shape)==1:
+                label = label[:,None]
+            loss = self.loss_class(preds,label)
         else:
-            loss = self.loss_class(preds.double(), label.long())
+            if preds.shape[-1] == 1:
+                preds = preds[:, 0]
+                loss = self.loss_class(preds.double(), label)
+            else:
+                loss = self.loss_class(preds.double(), label.long())
         self.log("train_loss", loss, on_epoch=True)
         return {"loss": loss}
 
     def validation_step(self, batch, batch_idx):
         times, Y, mask, label, coeffs = batch
         preds = self(times, Y, mask, coeffs)
-        if preds.shape[-1] == 1:
-            preds = preds[:, 0]
-            loss = self.loss_class(preds.double(), label)
+        if self.regression_mode:
+            if len(label.shape)==1:
+                label = label[:,None]
+            loss = self.loss_class(preds,label)
         else:
-            loss = self.loss_class(preds.double(), label.long())
+            if preds.shape[-1] == 1:
+                preds = preds[:, 0]
+                loss = self.loss_class(preds.double(), label)
+            else:
+                loss = self.loss_class(preds.double(), label.long())
         self.log("val_loss", loss, on_epoch=True)
         return {"Y": Y, "preds": preds, "T": times, "labels": label, "coeffs": coeffs}
 
     def predict_step(self, batch, batch_idx):
         times, Y, mask, label, coeffs = batch
         preds = self(times, Y, mask, coeffs)
-        if preds.shape[-1] == 1:
-            preds = preds[:, 0]
-            loss = self.loss_class(preds.double(), label)
+        if self.regression_mode:
+            if len(label.shape)==1:
+                label = label[:,None]
+            loss = self.loss_class(preds,label)
         else:
-            loss = self.loss_class(preds.double(), label.long())
+            if preds.shape[-1] == 1:
+                preds = preds[:, 0]
+                loss = self.loss_class(preds.double(), label)
+            else:
+                loss = self.loss_class(preds.double(), label.long())
         return {"Y": Y, "preds": preds, "T": times, "labels": label, "coeffs": coeffs}
 
     def validation_epoch_end(self, outputs):
-        preds = torch.cat([x["preds"] for x in outputs])
-        labels = torch.cat([x["labels"] for x in outputs])
-        if (self.hparams["data_type"] == "pMNIST") or (self.hparams["data_type"] == "Character"):
-            preds = torch.nn.functional.softmax(preds, dim=-1).argmax(-1)
-            accuracy = accuracy_score(
-                labels.long().cpu().numpy(), preds.cpu().numpy())
-            self.log("val_acc", accuracy, on_epoch=True)
-        else:
-            auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
-            self.log("val_auc", auc, on_epoch=True)
+        if not self.regression_mode:
+            preds = torch.cat([x["preds"] for x in outputs])
+            labels = torch.cat([x["labels"] for x in outputs])
+            if (self.hparams["data_type"] == "pMNIST") or (self.hparams["data_type"] == "Character"):
+                preds = torch.nn.functional.softmax(preds, dim=-1).argmax(-1)
+                accuracy = accuracy_score(
+                    labels.long().cpu().numpy(), preds.cpu().numpy())
+                self.log("val_acc", accuracy, on_epoch=True)
+            else:
+                auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
+                self.log("val_auc", auc, on_epoch=True)
 
-        times = outputs[0]["T"]
-        coeffs = outputs[0]["coeffs"]
-        Y_sample = outputs[0]["Y"]
+            times = outputs[0]["T"]
+            coeffs = outputs[0]["coeffs"]
+            Y_sample = outputs[0]["Y"]
 
-        if not self.pre_compute_ode:
-            x_eval = torch.linspace(
-                times[0], times[-1], 1000, device=times.device)
-            spline_eval = torch.cat(
-                [evaluate_spline(times, coeffs, x_eval_) for x_eval_ in x_eval], -1)
+            if not self.pre_compute_ode:
+                x_eval = torch.linspace(
+                    times[0], times[-1], 1000, device=times.device)
+                spline_eval = torch.cat(
+                    [evaluate_spline(times, coeffs, x_eval_) for x_eval_ in x_eval], -1)
 
-            # ----- Plotting the filtered trajectories ----
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=x_eval.cpu(), y=spline_eval.cpu()[
-                          0], mode='lines', name='interpolated spline'))
-            fig.add_trace(go.Scatter(
-                x=times.cpu(), y=Y_sample[0].cpu(), mode='markers', name='observations'))
+                # ----- Plotting the filtered trajectories ----
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=x_eval.cpu(), y=spline_eval.cpu()[
+                            0], mode='lines', name='interpolated spline'))
+                fig.add_trace(go.Scatter(
+                    x=times.cpu(), y=Y_sample[0].cpu(), mode='markers', name='observations'))
 
-            self.logger.experiment.log({"chart": fig})
-        # ---------------------------------------------
+                self.logger.experiment.log({"chart": fig})
+            # ---------------------------------------------
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.classif_model.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)

@@ -22,7 +22,6 @@ import torch.nn.functional as F
 
 torch.autograd.set_detect_anomaly(True)
 
-
 def get_value_from_cn(cn):
     Nc = cn.shape[-1]
     prod_cn = cn * \
@@ -31,21 +30,30 @@ def get_value_from_cn(cn):
 
 
 class MemoryCell(nn.Module):
-    def __init__(self,input_size, hidden_size, memory_size, memory_input_size):
+    def __init__(self,input_size, hidden_size, memory_size, memory_input_size, full_mask = False):
         super().__init__()
 
         self.hidden_activation = torch.nn.Tanh()
         self.hidden_proj = nn.Linear(hidden_size, hidden_size)
-        self.update_hidden = nn.Linear(memory_size * memory_input_size + input_size +1, hidden_size)
-        self.pre_memory_fun = nn.Linear(input_size +1 + hidden_size, memory_input_size)
+        if full_mask:
+            delta_t_dim = 2 * input_size # concatenating the mask as well as the time to next prediction
+        else:
+            delta_t_dim = 1
+        self.update_hidden = nn.Linear(memory_size * memory_input_size + input_size + delta_t_dim, hidden_size)
+
+        self.pre_memory_fun = nn.Linear(input_size + delta_t_dim + hidden_size, memory_input_size)
 
         self.output_model = nn.Sequential(nn.Linear(
                 hidden_size, hidden_size), nn.ReLU(), nn.Linear(hidden_size, input_size))
 
     def forward(self,input,state,t0,t1,delta_to_next_t,mask, update_memory_fun):
         (h, m) = state
-        
-        input = torch.cat((input, delta_to_next_t[:,None]), dim=1)
+
+        if len(mask.shape)==2:
+            input = torch.cat((input, delta_to_next_t,mask), dim=1)
+        else:
+            input = torch.cat((input, delta_to_next_t), dim=1)
+
         memory_input =  self.pre_memory_fun(torch.cat((input,h),-1))
 
         m_updated = update_memory_fun(m,memory_input,t0,t1)
@@ -54,11 +62,16 @@ class MemoryCell(nn.Module):
         hidden_updated = self.hidden_activation(hidden_pre_updated + self.hidden_proj(h))
 
         #import ipdb; ipdb.set_trace()
-        hidden = hidden_updated * mask[..., None] + \
-                h * (1-mask[..., None])
+        if len(mask.shape)==2:
+            mask_all = mask.any(1).float()
+        else:
+            mask_all = mask
 
-        memory = m_updated * mask[..., None, None] + \
-                m * (1-mask[..., None, None]) 
+        hidden = hidden_updated * mask_all[..., None] + \
+                h * (1-mask_all[..., None])
+
+        memory = m_updated * mask_all[..., None, None] + \
+                m * (1-mask_all[..., None, None]) 
 
         outputs = self.output_model(hidden)
         
@@ -129,7 +142,7 @@ def transition(measure, N, **measure_args):
 
 
 class HIPPOmod(nn.Module):
-    def __init__(self, Nc, input_dim, Delta, direct_classif, **kwargs):
+    def __init__(self, Nc, input_dim, Delta, direct_classif, full_mask = False, **kwargs):
         """
         Nc = dimension of the coefficients vector
         output_dim = dimension of the INPUT (but also the output of the reconstruction)
@@ -158,7 +171,7 @@ class HIPPOmod(nn.Module):
         self.direct_classif = direct_classif
         self.hidden_size = Nc
         if not self.direct_classif:
-            self.memory_cell = MemoryCell(input_size = input_dim, hidden_size = self.hidden_size, memory_size = self.Nc, memory_input_size = self.input_dim)
+            self.memory_cell = MemoryCell(input_size = input_dim, hidden_size = self.hidden_size, memory_size = self.Nc, memory_input_size = self.input_dim, full_mask = full_mask)
 
     def forward_mult(self, u, delta, precompute=False):
         """ Computes (I + d A) u
@@ -215,6 +228,13 @@ class HIPPOmod(nn.Module):
         return m
 
 
+    def update_memory_wrap(self,m,u,t0,t1):
+        if len(t0.shape)==2:
+            return torch.cat([self.update_memory(m[:,i_dim,:][:,None,:],u[:,i_dim][:,None],t0[:,i_dim],t1[:,i_dim]) for i_dim in range(t0.shape[1])],1)
+        else:
+            return self.update_memory(m,u,t0,t1)
+
+
     def forward(self,times, Y, mask, eval_mode=False):
         if self.direct_classif:
             return self.forward_hippo(times, Y, mask, eval_mode)
@@ -227,7 +247,12 @@ class HIPPOmod(nn.Module):
         """
         h = torch.zeros(Y.shape[0], self.input_dim, self.Nc, device=Y.device)
 
-        previous_times = torch.zeros(Y.shape[0], device=Y.device)
+        if len(mask.shape)==3:
+            previous_times = torch.zeros((Y.shape[0],mask.shape[-1]) ,device=Y.device)
+            ones_time = torch.ones((Y.shape[0],mask.shape[-1]),device=Y.device)
+        else:
+            previous_times = torch.zeros(Y.shape[0], device=Y.device)
+            ones_time = torch.ones(Y.shape[0], device=Y.device)
         #preds_list = []
         #y_traj = []
         #times_traj = []
@@ -235,14 +260,20 @@ class HIPPOmod(nn.Module):
         for i_t, time in enumerate(times):
 
             t0 = previous_times
-            t1 = torch.ones(Y.shape[0], device=Y.device) * time
-            h_updated = self.update_memory(h, Y[:, i_t, :], t0, t1)
+            t1 = ones_time * time
+            h_updated = self.update_memory_wrap(h, Y[:, i_t, :], t0, t1)
 
-            h = h_updated * mask[:, i_t][..., None, None] + \
+            if len(mask.shape)==3:
+                h = h_updated * mask[:, i_t][..., None] + \
+                h * (1-mask[:, i_t][..., None])
+                #previous_times = time * mask[:, i_t] + \
+                #previous_times * (1-mask[:, i_t])
+            else:
+                h = h_updated * mask[:, i_t][..., None, None] + \
                 h * (1-mask[:, i_t][..., None, None])
 
             previous_times = time * mask[:, i_t] + \
-                previous_times * (1-mask[:, i_t])
+            previous_times * (1-mask[:, i_t])
 
         return None, None, None, h
 
@@ -262,16 +293,26 @@ class HIPPOmod(nn.Module):
             t1 = torch.ones(Y.shape[0], device=Y.device) * time
             
             if i_t == len(times)-1:
-                next_t = t1 + t1 - t0
+                next_t = (t1 + t1 - t0)[:,None]
+                if len(mask.shape)==3:
+                    next_t = next_t.repeat((1,mask.shape[-1]))
             else:
-                next_t = times[mask[:, i_t+1:].argmax(1) + i_t + 1]
+                if len(mask.shape)==3:
+                    next_t = torch.stack([times[mask[:, i_t+1:,dim].argmax(1) + i_t + 1] for dim in range(mask.shape[-1])],-1)
+                else:
+                    next_t = times[mask[:, i_t+1:].argmax(1) + i_t + 1][:,None]
             
-            delta_next = next_t - t1  # time to next observation
+            delta_next = next_t - t1[:,None]  # time to next observation
             outputs, state = self.memory_cell(Y[:,i_t,:], state,  t0, t1, delta_next, mask[:,i_t], update_memory_fun= self.update_memory)
             outputs_list.append(outputs)
-
-            previous_times = time * mask[:, i_t] + \
+            
+            if len(mask.shape)==3:
+                previous_times = time * mask[:, i_t].any(-1).float() + \
+                previous_times * (1-mask[:, i_t].any(-1).float())
+            else:
+                previous_times = time * mask[:, i_t] + \
                 previous_times * (1-mask[:, i_t])
+
         outputs = torch.stack(outputs_list, dim=1)
 
         (h,m) = state
@@ -289,28 +330,40 @@ class HIPPO(pl.LightningModule):
         step_size=0.05,
         Delta=5,
         direct_classif=False,
+        regression_mode=False,
         **kwargs
     ):
         super().__init__()
         self.save_hyperparameters()
         self.hidden_dim = hidden_dim
+
+        if self.hparams["data_type"] == "MIMIC":
+            full_mask = True
+        else:
+            full_mask = False #Other dataset have a single mask for all dimensions
+
         self.hippo_model = HIPPOmod(
-            Nc=hidden_dim, input_dim=output_dim, hidden_dim=hidden_dim, Delta=Delta, direct_classif= direct_classif, **kwargs)
+            Nc=hidden_dim, input_dim=output_dim, hidden_dim=hidden_dim, Delta=Delta, direct_classif= direct_classif, full_mask = full_mask, **kwargs)
         # self.output_mod = nn.Sequential(nn.Linear(
         #    hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, output_dim))
         self.Delta = Delta
 
         self.direct_classif = direct_classif
 
-        if self.hparams["data_type"] == "pMNIST":
-            self.loss_class = torch.nn.CrossEntropyLoss()
-            class_output_dim = 10
-        elif self.hparams["data_type"] == "Character":
-            self.loss_class = torch.nn.CrossEntropyLoss()
-            class_output_dim = 20
-        else:
-            self.loss_class = torch.nn.BCEWithLogitsLoss()
+        self.regression_mode = regression_mode
+        if regression_mode:
+            self.loss_class = torch.nn.MSELoss()
             class_output_dim = 1
+        else:
+            if self.hparams["data_type"] == "pMNIST":
+                self.loss_class = torch.nn.CrossEntropyLoss()
+                class_output_dim = 10
+            elif self.hparams["data_type"] == "Character":
+                self.loss_class = torch.nn.CrossEntropyLoss()
+                class_output_dim = 20
+            else:
+                self.loss_class = torch.nn.BCEWithLogitsLoss()
+                class_output_dim = 1
 
         self.direct_classif = direct_classif
         self.output_dim = output_dim
@@ -337,7 +390,10 @@ class HIPPO(pl.LightningModule):
         return times, Y, mask, label, None
 
     def compute_mse_loss(self, Y, preds, mask):
-        mse = ((preds[:,:-1]-Y[:,1:]).pow(2)*mask[:,1:, None]).mean(-1).sum() / mask.sum()
+        if len(mask.shape)==3:
+            mse = ((preds[:,:-1]-Y[:,1:]).pow(2)*mask[:,1:, :]).sum() / mask.sum()
+        else:
+            mse = ((preds[:,:-1]-Y[:,1:]).pow(2)*mask[:,1:, None]).mean(-1).sum() / mask.sum()
         return mse
 
     def training_step(self, batch, batch_idx):
@@ -347,12 +403,17 @@ class HIPPO(pl.LightningModule):
             times, Y, mask)
 
         if self.direct_classif:
-            if preds.shape[-1] == 1:
-                preds = preds[:, 0]
-                loss = self.loss_class(preds.double(), label)
+            if self.regression_mode:
+                if len(label.shape)==1:
+                    label = label[:,None]
+                loss = self.loss_class(preds,label)
             else:
-                loss = self.loss_class(preds.double(), label.long())
-            return {"loss": loss}
+                if preds.shape[-1] == 1:
+                    preds = preds[:, 0]
+                    loss = self.loss_class(preds.double(), label)
+                else:
+                    loss = self.loss_class(preds.double(), label.long())
+            return {"loss":loss}
         else:
             loss = self.compute_mse_loss(Y,preds,mask)
             return {"loss": loss}
@@ -363,12 +424,16 @@ class HIPPO(pl.LightningModule):
             times, Y, mask, eval_mode=True)
 
         if self.direct_classif:
-            if preds.shape[-1] == 1:
-                preds = preds[:, 0]
-                loss = self.loss_class(preds.double(), label)
+            if self.regression_mode:
+                if len(label.shape)==1:
+                    label = label[:,None]
+                loss = self.loss_class(preds,label)
             else:
-                loss = self.loss_class(preds.double(), label.long())
-
+                if preds.shape[-1] == 1:
+                    preds = preds[:, 0]
+                    loss = self.loss_class(preds.double(), label)
+                else:
+                    loss = self.loss_class(preds.double(), label.long())
         else:
             loss = self.compute_mse_loss(Y,preds,mask)
 
@@ -377,52 +442,63 @@ class HIPPO(pl.LightningModule):
         return {"Y": Y, "preds": preds, "T": times, "mask": mask, "label": label, "pred_class": preds, "cn_embedding": cn_embedding}
 
     def validation_epoch_end(self, outputs):
-        if self.direct_classif:
-            preds = torch.cat([x["pred_class"] for x in outputs])
-            labels = torch.cat([x["label"] for x in outputs])
-            cn_embedding = outputs[0]["cn_embedding"]
-            cn_embedding = torch.stack(torch.chunk(
-                cn_embedding, self.output_dim, -1), -1)
+        if not self.regression_mode:
+            if self.direct_classif:
+                preds = torch.cat([x["pred_class"] for x in outputs])
+                labels = torch.cat([x["label"] for x in outputs])
+                cn_embedding = outputs[0]["cn_embedding"]
+                cn_embedding = torch.stack(torch.chunk(
+                    cn_embedding, self.output_dim, -1), -1)
 
-            T_sample = outputs[0]["T"]
-            Y_sample = outputs[0]["Y"]
-            mask = outputs[0]["mask"]
+                T_sample = outputs[0]["T"]
+                Y_sample = outputs[0]["Y"]
+                mask = outputs[0]["mask"]
 
-            observed_mask = (mask == 1)
-            times = T_sample
+                observed_mask = (mask == 1)
+                times = T_sample
 
-            if (self.hparams["data_type"] == "pMNIST") or (self.hparams["data_type"] == "Character"):
-                preds = torch.nn.functional.softmax(preds, dim=-1).argmax(-1)
-                accuracy = accuracy_score(
-                    labels.long().cpu().numpy(), preds.cpu().numpy())
-                self.log("val_acc", accuracy, on_epoch=True)
-            else:
-                auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
-                self.log("val_auc", auc, on_epoch=True)
+                if (self.hparams["data_type"] == "pMNIST") or (self.hparams["data_type"] == "Character"):
+                    preds = torch.nn.functional.softmax(preds, dim=-1).argmax(-1)
+                    accuracy = accuracy_score(
+                        labels.long().cpu().numpy(), preds.cpu().numpy())
+                    self.log("val_acc", accuracy, on_epoch=True)
+                else:
+                    auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
+                    self.log("val_auc", auc, on_epoch=True)
 
-            Tmax = T_sample.max().cpu().numpy()
-            Nc = cn_embedding.shape[1]  # number of coefficients
-            rec_span = np.linspace(Tmax-self.Delta, Tmax)
-            recs = [np.polynomial.legendre.legval(
-                (2/self.Delta)*(rec_span-Tmax) + 1, (cn_embedding[..., out_dim].cpu().numpy() * [(2*n+1)**0.5 for n in range(Nc)]).T) for out_dim in range(self.output_dim)]
+                Tmax = T_sample.max().cpu().numpy()
+                Nc = cn_embedding.shape[1]  # number of coefficients
+                rec_span = np.linspace(Tmax-self.Delta, Tmax)
+                recs = [np.polynomial.legendre.legval(
+                    (2/self.Delta)*(rec_span-Tmax) + 1, (cn_embedding[..., out_dim].cpu().numpy() * [(2*n+1)**0.5 for n in range(Nc)]).T) for out_dim in range(self.output_dim)]
 
-            dim_to_plot = 0
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=T_sample[observed_mask[0]].cpu(
-            ), y=Y_sample[0, observed_mask[0], dim_to_plot].cpu(), mode='markers', name='observations'))
-            fig.add_trace(go.Scatter(
-                x=rec_span, y=recs[dim_to_plot][0], mode='lines', name='polynomial reconstruction'))
-            self.logger.experiment.log({"chart": fig})
+                for dim_to_plot in range(Y_sample.shape[-1]):
+                    if len(observed_mask.shape)==3:
+                        observed_mask_dim = observed_mask[...,dim_to_plot]
+                    else:
+                        observed_mask_dim = observed_mask
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=T_sample[observed_mask_dim[0]].cpu(
+                        ), y=Y_sample[0, observed_mask_dim[0], dim_to_plot].cpu(), mode='markers', name='observations'))
+                    fig.add_trace(go.Scatter(
+                        x=rec_span, y=recs[dim_to_plot][0], mode='lines', name='polynomial reconstruction'))
+                    self.logger.experiment.log({f"chart_dim_{dim_to_plot}": fig})
         return
 
     def predict_step(self, batch, batch_idx):
         times, Y, mask, label, bridge_info = self.process_batch(batch)
         preds, _, _, embedding = self(times, Y, mask, eval_mode=False)
-        if preds.shape[-1] == 1:
-            preds = preds[:, 0]
-            loss = self.loss_class(preds.double(), label)
+        
+        if self.regression_mode:
+            if len(label.shape)==1:
+                label = label[:,None]
+            loss = self.loss_class(preds,label)
         else:
-            loss = self.loss_class(preds.double(), label.long())
+            if preds.shape[-1] == 1:
+                preds = preds[:, 0]
+                loss = self.loss_class(preds.double(), label)
+            else:
+                loss = self.loss_class(preds.double(), label.long())
         return {"Y": Y, "preds": preds, "T": times, "labels": label}
 
     def configure_optimizers(self):
@@ -448,6 +524,7 @@ class HippoClassification(pl.LightningModule):
                  init_model,
                  pre_compute_ode=False,
                  num_dims=1,
+                 regression_mode = False,
                  ** kwargs
                  ):
 
@@ -458,15 +535,20 @@ class HippoClassification(pl.LightningModule):
         self.embedding_model.freeze()
         self.pre_compute_ode = pre_compute_ode
 
-        if self.hparams["data_type"] == "pMNIST":
-            self.loss_class = torch.nn.CrossEntropyLoss()
-            output_dim = 10
-        elif self.hparams["data_type"] == "Character":
-            self.loss_class = torch.nn.CrossEntropyLoss()
-            output_dim = 20
-        else:
-            self.loss_class = torch.nn.BCEWithLogitsLoss()
+        self.regression_mode = regression_mode
+        if regression_mode:
+            self.loss_class = torch.nn.MSELoss()
             output_dim = 1
+        else:
+            if self.hparams["data_type"] == "pMNIST":
+                self.loss_class = torch.nn.CrossEntropyLoss()
+                output_dim = 10
+            elif self.hparams["data_type"] == "Character":
+                self.loss_class = torch.nn.CrossEntropyLoss()
+                output_dim = 20
+            else:
+                self.loss_class = torch.nn.BCEWithLogitsLoss()
+                output_dim = 1
 
         self.classif_model = nn.Sequential(
             nn.Linear(Nc * num_dims, Nc), nn.ReLU(), nn.Linear(Nc, output_dim))
@@ -496,36 +578,47 @@ class HippoClassification(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         times, Y, mask, label, embeddings = batch
         preds = self(times, Y, mask, embeddings)
-        if preds.shape[-1] == 1:
-            preds = preds[:, 0]
-            loss = self.loss_class(preds.double(), label)
+        if self.regression_mode:
+            if len(label.shape)==1:
+                label = label[:,None]
+            loss = self.loss_class(preds,label)
         else:
-            loss = self.loss_class(preds.double(), label.long())
+            if preds.shape[-1] == 1:
+                preds = preds[:, 0]
+                loss = self.loss_class(preds.double(), label)
+            else:
+                loss = self.loss_class(preds.double(), label.long())
         self.log("train_loss", loss, on_epoch=True)
         return {"loss": loss}
 
     def validation_step(self, batch, batch_idx):
         times, Y, mask, label, embeddings = batch
         preds = self(times, Y, mask, embeddings)
-        if preds.shape[-1] == 1:
-            preds = preds[:, 0]
-            loss = self.loss_class(preds.double(), label)
+        if self.regression_mode:
+            if len(label.shape)==1:
+                label = label[:,None]
+            loss = self.loss_class(preds,label)
         else:
-            loss = self.loss_class(preds.double(), label.long())
+            if preds.shape[-1] == 1:
+                preds = preds[:, 0]
+                loss = self.loss_class(preds.double(), label)
+            else:
+                loss = self.loss_class(preds.double(), label.long())
         self.log("val_loss", loss, on_epoch=True)
         return {"Y": Y, "preds": preds, "T": times, "labels": label}
 
     def validation_epoch_end(self, outputs):
-        preds = torch.cat([x["preds"] for x in outputs])
-        labels = torch.cat([x["labels"] for x in outputs])
-        if (self.hparams["data_type"] == "pMNIST") or (self.hparams["data_type"] == "Character"):
-            preds = torch.nn.functional.softmax(preds, dim=-1).argmax(-1)
-            accuracy = accuracy_score(
-                labels.long().cpu().numpy(), preds.cpu().numpy())
-            self.log("val_acc", accuracy, on_epoch=True)
-        else:
-            auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
-            self.log("val_auc", auc, on_epoch=True)
+        if not self.regression_mode:
+            preds = torch.cat([x["preds"] for x in outputs])
+            labels = torch.cat([x["labels"] for x in outputs])
+            if (self.hparams["data_type"] == "pMNIST") or (self.hparams["data_type"] == "Character"):
+                preds = torch.nn.functional.softmax(preds, dim=-1).argmax(-1)
+                accuracy = accuracy_score(
+                    labels.long().cpu().numpy(), preds.cpu().numpy())
+                self.log("val_acc", accuracy, on_epoch=True)
+            else:
+                auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
+                self.log("val_auc", auc, on_epoch=True)
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.classif_model.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)

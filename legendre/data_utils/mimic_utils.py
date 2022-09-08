@@ -10,6 +10,7 @@ from legendre.utils import str2bool
 from legendre.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch
 from legendre.models.spline_cnode import SplineCNODEClass
 
+from numpy.random import default_rng
 
 class DictDist():
     def __init__(self, dict_of_rvs): self.dict_of_rvs = dict_of_rvs
@@ -25,7 +26,7 @@ class DictDist():
 class Choice():
     def __init__(self, options): self.options = options
     def rvs(self, n): return [self.options[i]
-                              for i in ss.randint(0, len(self.options)).rvs(n)]
+                              for i in np.randint(0, len(self.options)).rvs(n)]
 
 
 def simple_imputer(df, ID_COLS):
@@ -77,8 +78,12 @@ def prepare_dataloader(df, Ys, batch_size, shuffle=True):
     return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=True)
 
 
-def process_mimic_dataset():
+def process_mimic_dataset(seed = 421):
 
+    rng = default_rng(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    
     DATA_FILEPATH = os.path.join(
         DATA_DIR, 'physionet.org', 'all_hourly_data.h5')
     GAP_TIME = 6  # In hours
@@ -86,8 +91,6 @@ def process_mimic_dataset():
     SEED = 1
     ID_COLS = ['subject_id', 'hadm_id', 'icustay_id']
 
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
 
     data_full_lvl2 = pd.read_hdf(DATA_FILEPATH, 'vitals_labs')
     statics = pd.read_hdf(DATA_FILEPATH, 'patients')
@@ -114,14 +117,14 @@ def process_mimic_dataset():
     # assert lvl2_subjects == set(raw_subj_idx), "Subject ID pools differ!"
 
     np.random.seed(SEED)
-    subjects, N = np.random.permutation(
-        list(lvl2_subjects)), len(lvl2_subjects)
+    subjects, N = rng.permutation(
+        list(lvl2_subjects),), len(lvl2_subjects)
     N_train, N_dev, N_test = int(
         train_frac * N), int(dev_frac * N), int(test_frac * N)
     train_subj = subjects[:N_train]
     dev_subj = subjects[N_train:N_train + N_dev]
     test_subj = subjects[N_train+N_dev:]
-
+    
     [(lvl2_train, lvl2_dev, lvl2_test), (Ys_train, Ys_dev, Ys_test)] = [
         [df[df.index.get_level_values('subject_id').isin(s)]
          for s in (train_subj, dev_subj, test_subj)]
@@ -164,18 +167,18 @@ def process_mimic_dataset():
     ]
 
     lvl2_train.to_pickle(os.path.join(
-        DATA_DIR, 'physionet.org', "processed", "lvl2_train.pkl"))
+        DATA_DIR, 'physionet.org', "processed",f"{seed}", "lvl2_train.pkl"))
     lvl2_dev.to_pickle(os.path.join(
-        DATA_DIR, 'physionet.org', "processed", "lvl2_dev.pkl"))
+        DATA_DIR, 'physionet.org', "processed",f"{seed}", "lvl2_dev.pkl"))
     lvl2_test.to_pickle(os.path.join(
-        DATA_DIR, 'physionet.org', "processed", "lvl2_test.pkl"))
+        DATA_DIR, 'physionet.org', "processed",f"{seed}", "lvl2_test.pkl"))
 
     Ys_train.to_pickle(os.path.join(
-        DATA_DIR, 'physionet.org', "processed", "Ys_train.pkl"))
+        DATA_DIR, 'physionet.org', "processed",f"{seed}", "Ys_train.pkl"))
     Ys_dev.to_pickle(os.path.join(
-        DATA_DIR, 'physionet.org', "processed", "Ys_dev.pkl"))
+        DATA_DIR, 'physionet.org', "processed", f"{seed}","Ys_dev.pkl"))
     Ys_test.to_pickle(os.path.join(
-        DATA_DIR, 'physionet.org', "processed", "Ys_test.pkl"))
+        DATA_DIR, 'physionet.org', "processed",f"{seed}", "Ys_test.pkl"))
 
 
 class MIMICDataset(Dataset):
@@ -187,15 +190,15 @@ class MIMICDataset(Dataset):
             DATA_DIR, 'physionet.org', "processed", f"Ys_{fold_type}.pkl"))
 
         #TODO: add creatinine. Check feature importance of mortality.
-        cols = ["heart rate", "mean blood pressure", "diastolic blood pressure", "oxygen saturation","respiratory rate"]
+        cols = ["heart rate", "mean blood pressure", "diastolic blood pressure", "oxygen saturation","respiratory rate"] + ["glucose","blood urea nitrogen","white blood cell count","temperature","creatinine"]
         self.X = torch.from_numpy(to_3D_tensor(
             df_traj[cols]).astype(np.float32))
         self.labels = torch.from_numpy(
             df_Y[label_type].values.astype(np.int64))
 
-        if fold_type == "train":
-            self.X = self.X[:5000]
-            self.labels = self.labels[:5000]
+        #if fold_type == "train":
+        #    self.X = self.X[:5000]
+        #    self.labels = self.labels[:5000]
 
         self.xobs = torch.linspace(0, 10, 24) + 0.1
         self.mask = self.X[:, 0::3].permute(0, 2, 1)
@@ -203,16 +206,17 @@ class MIMICDataset(Dataset):
 
         N = self.X.shape[0]
         # only taking observations where all dimensions are observed
-        self.mask = self.mask.all(-1).float()
+        #self.mask = self.mask.all(-1).float()
+        
         self.add_mask = np.random.binomial(
-            1, irregular_rate, size=(N, len(self.xobs))).astype(np.float32)
+            1, irregular_rate, size=self.mask.shape).astype(np.float32)
         self.mask = self.mask * self.add_mask
         self.sequences[self.mask == 0] = 0
 
         self.spline_mode = spline_mode
         if spline_mode:
             self.coeffs = [torch.stack([torch.Tensor(get_hermite_spline(
-                self.xobs, self.sequences[n, :, dim], self.mask[n, :])) for dim in range(self.sequences.shape[-1])], -1) for n in range(N)]
+                self.xobs, self.sequences[n, :, dim], self.mask[n, :,:])) for dim in range(self.sequences.shape[-1])], -1) for n in range(N)]
 
         self.kwargs = kwargs
         self.pre_compute_ode = pre_compute_ode
@@ -259,7 +263,7 @@ class MIMICDataset(Dataset):
 
 
 class MIMICDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size=128, seed=42, num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, multivariate=False, **kwargs):
+    def __init__(self, batch_size=128, seed=42, num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, regression_mode = False, **kwargs):
 
         super().__init__()
         self.batch_size = batch_size
@@ -270,8 +274,9 @@ class MIMICDataModule(pl.LightningDataModule):
         self.kwargs = kwargs
         self.pre_compute_ode = pre_compute_ode
         self.seed = seed
-        self.num_dims = 5
+        self.num_dims = 10
         self.test_only = False
+        self.regression_mode = regression_mode
 
     def set_test_only(self):
         self.test_only = True
@@ -347,9 +352,11 @@ class MIMICDataModule(pl.LightningDataModule):
                             default=False, help="if True, use spline interpolation")
         parser.add_argument('--pre_compute_ode', type=str2bool, default=False,
                             help="if True, pre-computes the ODE embedding of the splines")
+        parser.add_argument('--regression_mode', type=str2bool, default=False,
+                            help="if True, splits the sequence into a past and future part")
         return parser
 
 
 if __name__ == "__main__":
-    # process_mimic_dataset()  # run this to create the processed dataframes
+    process_mimic_dataset()  # run this to create the processed dataframes
     ds = MIMICDataset()

@@ -15,6 +15,7 @@ from legendre.models.node import SequentialODE
 from legendre.models.cnode import CNODE
 from legendre.models.cnode_ext import CNODExt
 from legendre.models.node_ext import NODExt
+from legendre.models.node_mod import NODE
 from legendre.models.hippo import HIPPO
 from legendre.models.rnn import RNN
 from legendre.models.simple_classif import SimpleClassif
@@ -56,6 +57,9 @@ def main(model_cls, data_cls, args):
 
     checkpoint_path = checkpoint_cb.best_model_path
 
+    #tester = pl.Trainer(gpus=args.gpus, logger=logger,resume_from_checkpoint=checkpoint_path)
+    #tester.test(model, dataloaders=dataset.test_dataloader())
+
 
 if __name__ == "__main__":
 
@@ -88,6 +92,8 @@ if __name__ == "__main__":
         model_cls = CNODE
     elif partial_args.model_type == "SequentialODE":
         model_cls = SequentialODE
+    elif partial_args.model_type == "NODE":
+        model_cls = NODE
     elif partial_args.model_type == "CNODExt":
         model_cls = CNODExt
     elif partial_args.model_type == "NODExt":

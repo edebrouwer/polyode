@@ -198,7 +198,7 @@ class CharacterTraj(Dataset):
 
 
 class CharacterTrajDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size=128, seed=42, num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, multivariate=False, **kwargs):
+    def __init__(self, batch_size=128, seed=42, num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, multivariate=False, regression_mode = False, **kwargs):
 
         super().__init__()
         self.batch_size = batch_size
@@ -210,10 +210,15 @@ class CharacterTrajDataModule(pl.LightningDataModule):
         self.pre_compute_ode = pre_compute_ode
         self.seed = seed
         self.multivariate = multivariate
+        self.regression_mode = regression_mode
         if self.multivariate:
             self.num_dims = 3
         else:
             self.num_dims = 1
+        self.test_only = False
+    
+    def set_test_only(self):
+        self.test_only = True
 
     def prepare_data(self):
 
@@ -229,7 +234,8 @@ class CharacterTrajDataModule(pl.LightningDataModule):
             train=False, irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, multivariate=self.multivariate, **self.kwargs)
 
         if self.pre_compute_ode:
-            dataset.pre_compute_ode_embeddings(**self.kwargs)
+            if not self.test_only:
+                dataset.pre_compute_ode_embeddings(**self.kwargs)
             test_dataset.pre_compute_ode_embeddings(**self.kwargs)
 
         self.train_batch_size = self.batch_size
@@ -289,6 +295,8 @@ class CharacterTrajDataModule(pl.LightningDataModule):
                             help="if True, pre-computes the ODE embedding of the splines")
         parser.add_argument('--multivariate', type=str2bool, default=False,
                             help="if True, uses the multivariate version of the dataset")
+        parser.add_argument('--regression_mode', type=str2bool, default=False,
+                            help="if True, splits the sequence into a past and future part")
         return parser
 
 

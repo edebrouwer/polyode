@@ -221,11 +221,20 @@ class CNODExtmod(nn.Module):
                 # exp(-5) is the uncertainty at the observation
                 h_updated = torch.cat(
                     (h_cn, Y[:, i_t], -5*torch.ones((Y.shape[0], self.uncertainty_dims), device=Y.device), h_cn, h_uncertainty), -1)
-            else:
+            else: 
                 h_no_update = torch.cat((h_cn, g_out), -1)
                 h_updated = torch.cat((h_cn, Y[:, i_t], h_cn), -1)
 
-            h = h_updated * mask[:, i_t][..., None] + \
+
+            if len(mask.shape)==3:
+                signal_no_update = g_out[:, :self.input_dim]
+                driver_no_update = g_out[:,self.input_dim:].view(g_out.shape[0], self.input_dim,-1).permute(0,2,1)
+                driver_update = h_cn.view(h_cn.shape[0], self.input_dim,-1).permute(0,2,1)
+                signal = Y[:,i_t] * mask[:,i_t] + signal_no_update * (1-mask[:,i_t])
+                driver = (driver_update * mask[:,i_t][:,None,:] + driver_no_update * (1-mask[:,i_t][:,None,:])).reshape(driver_update.shape[0], -1)
+                h = torch.cat((h_cn, signal, driver), -1)
+            else:
+                h = h_updated * mask[:, i_t][..., None] + \
                 h_no_update * (1-mask[:, i_t][..., None])
 
             current_time = time
@@ -300,7 +309,10 @@ class CNODExt(pl.LightningModule):
             loss = ((2*torch.log(2*torch.pi*stds.pow(2) + 0.00001) + (preds-Y).pow(2) /
                     (0.001 + stds.pow(2)))*(mask[..., None])).mean(-1).sum() / mask.sum()
         else:
-            loss = ((preds-Y).pow(2)*mask[..., None]
+            if len(mask.shape)==3:
+                loss = ((preds-Y).pow(2)*(mask)).sum() / mask.sum()
+            else:
+                loss = ((preds-Y).pow(2)*mask[..., None]
                     ).mean(-1).sum() / mask.sum()
         return loss
 
@@ -353,6 +365,7 @@ class CNODExt(pl.LightningModule):
         self.log("val_loss", mse, on_epoch=True)
         return {"Y": Y, "preds": preds, "T": times, "preds_traj": preds_traj, "times_traj": times_traj, "mask": mask, "label": label, "pred_class": preds_class, "cn_embedding": cn_embedding, "uncertainty_pred": uncertainty_pred, "uncertainty_embedding": uncertainty_embedding, "uncertainty_traj": uncertainty_traj}
 
+    
     def validation_epoch_end(self, outputs) -> None:
 
         T_sample = outputs[0]["T"]
@@ -380,25 +393,31 @@ class CNODExt(pl.LightningModule):
             uncertainty_recs = [np.polynomial.legendre.legval(
                 (2/self.Delta)*(rec_span-Tmax) + 1, (uncertainty_embedding[..., out_dim].cpu().numpy() * [(2*n+1)**0.5 for n in range(Nc)]).T) for out_dim in range(self.output_dim)]
 
-        dim_to_plot = 0  # which dimension of the time series to plot
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=T_sample[observed_mask[0]].cpu(
-        ), y=Y_sample[0, observed_mask[0], dim_to_plot].cpu(), mode='markers', name='observations'))
-        fig.add_trace(go.Scatter(x=times_traj.cpu(),
-                                 y=preds_traj[0, :, dim_to_plot].cpu(), mode='lines', name='interpolations'))
-        fig.add_trace(go.Scatter(
-            x=rec_span, y=recs[dim_to_plot][0], mode='lines', name='polynomial reconstruction'))
-        if self.uncertainty_mode:
-            lower_bound = (recs[dim_to_plot][0] -
-                           uncertainty_recs[dim_to_plot][0]).tolist()
-            upper_bound = (recs[dim_to_plot][0] +
-                           uncertainty_recs[dim_to_plot][0]).tolist()
-            fig.add_trace(go.Scatter(x=rec_span.tolist() + rec_span.tolist()[
-                          ::-1], y=upper_bound + lower_bound[::-1], fill="toself", name='reconstruction uncertainties'))
-            fig.add_trace(go.Scatter(x=times_traj.cpu(),
-                                     y=uncertainty_traj[0, :, dim_to_plot].cpu(), mode='lines', name='uncertainty preds'))
+        for dim_to_plot in range(Y_sample.shape[-1]):
+            
+            if len(observed_mask.shape)==3:
+                observed_mask_dim = observed_mask[...,dim_to_plot]
+            else:
+                observed_mask_dim = observed_mask
 
-        self.logger.experiment.log({"chart": fig})
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=T_sample[observed_mask_dim[0]].cpu(
+            ), y=Y_sample[0, observed_mask_dim[0], dim_to_plot].cpu(), mode='markers', name='observations'))
+            fig.add_trace(go.Scatter(x=times_traj.cpu(),
+                                    y=preds_traj[0, :, dim_to_plot].cpu(), mode='lines', name='interpolations'))
+            fig.add_trace(go.Scatter(
+                x=rec_span, y=recs[dim_to_plot][0], mode='lines', name='polynomial reconstruction'))
+            if self.uncertainty_mode:
+                lower_bound = (recs[dim_to_plot][0] -
+                            uncertainty_recs[dim_to_plot][0]).tolist()
+                upper_bound = (recs[dim_to_plot][0] +
+                            uncertainty_recs[dim_to_plot][0]).tolist()
+                fig.add_trace(go.Scatter(x=rec_span.tolist() + rec_span.tolist()[
+                            ::-1], y=upper_bound + lower_bound[::-1], fill="toself", name='reconstruction uncertainties'))
+                fig.add_trace(go.Scatter(x=times_traj.cpu(),
+                                        y=uncertainty_traj[0, :, dim_to_plot].cpu(), mode='lines', name='uncertainty preds'))
+
+            self.logger.experiment.log({f"chart_dim_{dim_to_plot}": fig})
 
         return
 
@@ -439,6 +458,7 @@ class CNODExtClassification(pl.LightningModule):
                  init_model,
                  pre_compute_ode=False,
                  num_dims=1,
+                 regression_mode = False,
                  **kwargs
                  ):
 
@@ -448,15 +468,20 @@ class CNODExtClassification(pl.LightningModule):
         self.embedding_model.freeze()
         self.pre_compute_ode = pre_compute_ode
 
-        if self.hparams["data_type"] == "pMNIST":
-            self.loss_class = torch.nn.CrossEntropyLoss()
-            output_dim = 10
-        elif self.hparams["data_type"] == "Character":
-            self.loss_class = torch.nn.CrossEntropyLoss()
-            output_dim = 20
-        else:
-            self.loss_class = torch.nn.BCEWithLogitsLoss()
+        self.regression_mode = regression_mode
+        if regression_mode:
+            self.loss_class = torch.nn.MSELoss()
             output_dim = 1
+        else:
+            if self.hparams["data_type"] == "pMNIST":
+                self.loss_class = torch.nn.CrossEntropyLoss()
+                output_dim = 10
+            elif self.hparams["data_type"] == "Character":
+                self.loss_class = torch.nn.CrossEntropyLoss()
+                output_dim = 20
+            else:
+                self.loss_class = torch.nn.BCEWithLogitsLoss()
+                output_dim = 1
 
         self.classif_model = nn.Sequential(
             nn.Linear(hidden_dim * num_dims, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, output_dim))
@@ -477,46 +502,62 @@ class CNODExtClassification(pl.LightningModule):
     def predict_step(self, batch, batch_idx):
         times, Y, mask, label, embeddings = batch
         preds = self(times, Y, mask, embeddings)
-        if preds.shape[-1] == 1:
-            preds = preds[:, 0]
-            loss = self.loss_class(preds.double(), label)
+        if self.regression_mode:
+            if len(label.shape)==1:
+                label = label[:,None]
+            loss = self.loss_class(preds,label)
         else:
-            loss = self.loss_class(preds.double(), label.long())
+            if preds.shape[-1] == 1:
+                preds = preds[:, 0]
+                loss = self.loss_class(preds.double(), label)
+            else:
+                loss = self.loss_class(preds.double(), label.long())
         return {"Y": Y, "preds": preds, "T": times, "labels": label}
 
     def training_step(self, batch, batch_idx):
         times, Y, mask, label, embeddings = batch
         preds = self(times, Y, mask, embeddings)
-        if preds.shape[-1] == 1:
-            preds = preds[:, 0]
-            loss = self.loss_class(preds.double(), label)
+        if self.regression_mode:
+            if len(label.shape)==1:
+                label = label[:,None]
+            loss = self.loss_class(preds,label)
         else:
-            loss = self.loss_class(preds.double(), label.long())
+            if preds.shape[-1] == 1:
+                preds = preds[:, 0]
+                loss = self.loss_class(preds.double(), label)
+            else:
+                loss = self.loss_class(preds.double(), label.long())
         self.log("train_loss", loss, on_epoch=True)
         return {"loss": loss}
 
     def validation_step(self, batch, batch_idx):
         times, Y, mask, label, embeddings = batch
         preds = self(times, Y, mask, embeddings)
-        if preds.shape[-1] == 1:
-            preds = preds[:, 0]
-            loss = self.loss_class(preds.double(), label)
+        if self.regression_mode:
+            if len(label.shape)==1:
+                label = label[:,None]
+            loss = self.loss_class(preds,label)
         else:
-            loss = self.loss_class(preds.double(), label.long())
+            if preds.shape[-1] == 1:
+                preds = preds[:, 0]
+                loss = self.loss_class(preds.double(), label)
+            else:
+                loss = self.loss_class(preds.double(), label.long())
         self.log("val_loss", loss, on_epoch=True)
         return {"Y": Y, "preds": preds, "T": times, "labels": label}
 
     def validation_epoch_end(self, outputs):
-        preds = torch.cat([x["preds"] for x in outputs])
-        labels = torch.cat([x["labels"] for x in outputs])
-        if (self.hparams["data_type"] == "pMNIST") or (self.hparams["data_type"] == "Character"):
-            preds = torch.nn.functional.softmax(preds, dim=-1).argmax(-1)
-            accuracy = accuracy_score(
-                labels.long().cpu().numpy(), preds.cpu().numpy())
-            self.log("val_acc", accuracy, on_epoch=True)
-        else:
-            auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
-            self.log("val_auc", auc, on_epoch=True)
+        if not self.regression_mode:
+            preds = torch.cat([x["preds"] for x in outputs])
+            labels = torch.cat([x["labels"] for x in outputs])
+            if (self.hparams["data_type"] == "pMNIST") or (self.hparams["data_type"] == "Character"):
+                preds = torch.nn.functional.softmax(preds, dim=-1).argmax(-1)
+                accuracy = accuracy_score(
+                    labels.long().cpu().numpy(), preds.cpu().numpy())
+                self.log("val_acc", accuracy, on_epoch=True)
+            else:
+                auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
+                self.log("val_auc", auc, on_epoch=True)
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.classif_model.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)

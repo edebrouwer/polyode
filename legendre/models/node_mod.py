@@ -18,7 +18,7 @@ from legendre.utils import str2bool
 torch.autograd.set_detect_anomaly(True)
 
 
-class NODExtmod(nn.Module):
+class NODEmod(nn.Module):
     def __init__(self, Nc, input_dim, hidden_dim, Delta, corr_time, delta_t, method="euler", extended_ode_mode=False, output_fun="mlp", bridge_ode=False, predict_from_cn=False, auto_encoder=False, **kwargs):
         """
         Nc = dimension of the coefficients vector
@@ -43,14 +43,18 @@ class NODExtmod(nn.Module):
         self.predict_from_cn = predict_from_cn
         self.Nc = Nc
         self.node = nn.Sequential(
-            nn.Linear(2*Nc + input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 2*Nc + input_dim))
+            nn.Linear(Nc * input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, Nc * input_dim))
 
+        self.update_fun = nn.GRUCell(input_size= 2 * input_dim, hidden_size= Nc * input_dim)
+        self.output_mod = nn.Sequential(
+                nn.Linear(Nc * input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, input_dim)) 
+        
         self.auto_encoder = auto_encoder
         if auto_encoder:
             self.ae_ode_mod = nn.Sequential(
-                nn.Linear(2*Nc + input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, 2*Nc + input_dim))
+                nn.Linear(Nc * input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, Nc * input_dim))
             self.ae_out_fun = nn.Sequential(
-                nn.Linear(2*Nc + input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, input_dim))
+                nn.Linear(Nc * input_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, input_dim))
 
     def out_fun(self, h):
         return h[..., :self.input_dim]
@@ -131,12 +135,14 @@ class NODExtmod(nn.Module):
         """
         eval mode returns the ode integrations at multiple times in between observations
         """
-        h = torch.cat(
-            (torch.zeros(Y.shape[0], self.Nc, device=Y.device), torch.zeros(Y.shape[0], self.Nc+self.input_dim, device=Y.device)), -1)
+        h = torch.zeros(Y.shape[0], self.Nc * self.input_dim, device=Y.device)
         current_time = 0
         preds_list = []
         y_traj = []
         times_traj = []
+        if len(mask.shape)==2:
+            mask = mask[..., None].repeat((1, 1, self.input_dim))
+
         for i_t, time in enumerate(times):
             h_out, pred,  eval_times = self.forward_ode(
                 time, current_time, h, eval_mode=eval_mode)
@@ -147,10 +153,10 @@ class NODExtmod(nn.Module):
             y_traj.append(pred[1:].permute(1, 0, 2))
             times_traj.append(eval_times[1:])
 
-            h_updated = torch.cat((Y[:, i_t], h_cn[..., self.input_dim:]), -1)
+            h_updated = self.update_fun(torch.cat((Y[:,i_t],mask[:,i_t]), dim=1),h_cn)
 
-            h = h_updated * mask[:, i_t][..., None] + \
-                h_cn * (1-mask[:, i_t][..., None])
+            h = h_updated * mask[:, i_t].any(-1)[...,None].float() + \
+                h_cn * (1-mask[:, i_t].any(-1)[..., None].float())
 
             current_time = time
 
@@ -170,7 +176,7 @@ class NODExtmod(nn.Module):
         return y_preds, y_traj, times_traj, h, h_cn, reverted_pred
 
 
-class NODExt(pl.LightningModule):
+class NODE(pl.LightningModule):
     def __init__(
         self,
         # channels,
@@ -194,7 +200,7 @@ class NODExt(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.hidden_dim = hidden_dim
-        self.node_model = NODExtmod(Nc=hidden_dim, input_dim=output_dim, hidden_dim=hidden_dim, Delta=Delta, corr_time=corr_time, delta_t=delta_t,
+        self.node_model = NODEmod(Nc=hidden_dim, input_dim=output_dim, hidden_dim=hidden_dim, Delta=Delta, corr_time=corr_time, delta_t=delta_t,
                                     method=method, extended_ode_mode=extended_ode_mode, output_fun=output_fun, bridge_ode=bridge_ode, auto_encoder=auto_encoder, **kwargs)
         self.output_mod = nn.Sequential(nn.Linear(
             hidden_dim, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, output_dim))
@@ -303,6 +309,8 @@ class NODExt(pl.LightningModule):
         self.logger.experiment.log({"chart": fig})
         return
 
+
+
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
 
@@ -335,7 +343,7 @@ class NODExt(pl.LightningModule):
         return parser
 
 
-class NODExtClassification(pl.LightningModule):
+class NODEClassification(pl.LightningModule):
     def __init__(self, lr,
                  hidden_dim,
                  weight_decay,
@@ -368,7 +376,7 @@ class NODExtClassification(pl.LightningModule):
                 output_dim = 1
 
         self.classif_model = nn.Sequential(
-            nn.Linear(hidden_dim * 2 + num_dims, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, output_dim))
+            nn.Linear(hidden_dim * num_dims, hidden_dim), nn.ReLU(), nn.Linear(hidden_dim, output_dim))
 
     def forward(self, times, Y, mask, coeffs, eval_mode=False):
 

@@ -16,6 +16,7 @@ import torch
 import wandb
 
 from legendre.models.node import SequentialODE, SequentialODEClassification
+from legendre.models.node_mod import NODE,NODEClassification
 from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
 from legendre.data_utils.pMNIST_utils import pMNISTDataModule
 from legendre.data_utils.character_utils import CharacterTrajDataModule
@@ -162,6 +163,9 @@ if __name__ == "__main__":
     elif partial_args.model_type == "Hippo":
         model_cls = HippoClassification
         init_model_cls = HIPPO
+    elif partial_args.model_type == "NODE":
+        model_cls = NODEClassification
+        init_model_cls = NODE
 
     parser = model_cls.add_model_specific_args(parser)
     parser = data_cls.add_dataset_specific_args(parser)
