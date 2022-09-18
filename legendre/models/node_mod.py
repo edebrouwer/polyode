@@ -95,11 +95,14 @@ class NODEmod(nn.Module):
         pred = self.out_fun(h_out)
         return h_out, pred
 
-    def backward_ode(self, end_time, start_time, cn, eval_mode=False, **kwargs):
+    def backward_ode(self, end_time, start_time, cn, eval_mode=False, eval_times_ = None, **kwargs):
 
         if eval_mode:
-            eval_times = torch.linspace(
+            if eval_times_ is None:
+                eval_times = torch.linspace(
                 start_time, end_time, steps=50).to(cn.device)
+            else:
+                eval_times = eval_times_
         else:
             eval_times = torch.Tensor([start_time, end_time]).to(cn.device)
 
@@ -245,14 +248,41 @@ class NODE(pl.LightningModule):
                     mask[..., None]).mean(-1).sum() / mask.sum()
         return mse
 
-    def process_batch(self, batch):
+    def process_batch(self, batch,  forecast_mode = False):
         if self.bridge_ode:
             times, Y, mask, label, ids, ts, ys, mask_ids = batch
             return times, Y, mask, label, (ids, ts, ys, mask_ids)
+        elif forecast_mode:
+            times, Y, mask, label, _, Y_past, Y_future, mask_past, mask_future = batch
+            return times, Y, mask, label, None, Y_past, Y_future, mask_past, mask_future
         else:
             times, Y, mask, label, _ = batch
             return times, Y, mask, label, None
 
+    def predict_step(self, batch, batch_idx):
+        times, Y, mask, label, bridge_info, Y_past, Y_future, mask_past, mask_future = self.process_batch(
+            batch, forecast_mode=True)
+
+        # assert len(torch.unique(T)) == T.shape[1]
+        # times = torch.sort(torch.unique(T))[0]
+        preds, preds_traj, times_traj, _, cn_pre_embeddings, reverted_preds = self(
+            times, Y_past, mask_past, bridge_info=bridge_info)
+        
+        _, _, _, cn_embedding, _, reverted_preds = self(
+            times, Y, mask, bridge_info=bridge_info)
+
+        Tmax = times.max()
+        backward_window = 5
+
+        mask_rec = (times-Tmax+backward_window)>0
+        rec_span = times[mask_rec]
+        
+        h_out, recs, recs_times = self.node_model.backward_ode(start_time = 0, end_time = 0, eval_times_ = rec_span,
+        cn=cn_embedding, eval_mode=True)
+        
+        recs = torch.permute(torch.flip(recs, (0,)),(1,0,2))
+        return {"Y_future":Y_future, "preds":preds, "mask_future":mask_future, "pred_rec":recs,"Y_rec":Y[:,mask_rec,:],"mask_rec":mask[:,mask_rec,:]} 
+    
     def training_step(self, batch, batch_idx):
 
         times, Y, mask, label, bridge_info = self.process_batch(batch)

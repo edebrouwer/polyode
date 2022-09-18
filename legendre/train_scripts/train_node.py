@@ -24,6 +24,7 @@ from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
 from legendre.data_utils.character_utils import CharacterTrajDataModule
 from legendre.data_utils.mimic_utils import MIMICDataModule
 from legendre.data_utils.lorenz_utils import LorenzDataModule
+from legendre.data_utils.activity_utils import ActivityDataModule
 
 
 def main(model_cls, data_cls, args):
@@ -87,6 +88,8 @@ if __name__ == "__main__":
         data_cls = MIMICDataModule
     elif partial_args.data_type == "Lorenz":
         data_cls = LorenzDataModule
+    elif partial_args.data_type == "Activity":
+        data_cls = ActivityDataModule
 
     if partial_args.model_type == "CNODE":
         model_cls = CNODE

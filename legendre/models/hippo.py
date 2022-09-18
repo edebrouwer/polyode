@@ -385,9 +385,13 @@ class HIPPO(pl.LightningModule):
         _, _, _, embedding = self(times, Y, mask, eval_mode=eval_mode)
         return embedding
 
-    def process_batch(self, batch):
-        times, Y, mask, label, _ = batch
-        return times, Y, mask, label, None
+    def process_batch(self, batch, forecast_mode = False):
+        if forecast_mode:
+            times, Y, mask, label, _, Y_past, Y_future, mask_past, mask_future = batch
+            return times, Y, mask, label, None, Y_past, Y_future, mask_past, mask_future
+        else:
+            times, Y, mask, label, _ = batch
+            return times, Y, mask, label, None
 
     def compute_mse_loss(self, Y, preds, mask):
         if len(mask.shape)==3:
@@ -395,6 +399,14 @@ class HIPPO(pl.LightningModule):
         else:
             mse = ((preds[:,:-1]-Y[:,1:]).pow(2)*mask[:,1:, None]).mean(-1).sum() / mask.sum()
         return mse
+
+    def compute_loss(self, Y, preds, mask):
+        if len(mask.shape)==3:
+            loss = ((preds-Y).pow(2)*(mask)).sum() / mask.sum()
+        else:
+            loss = ((preds-Y).pow(2)*mask[..., None]
+                    ).mean(-1).sum() / mask.sum()
+        return loss
 
     def training_step(self, batch, batch_idx):
 
@@ -486,20 +498,31 @@ class HIPPO(pl.LightningModule):
         return
 
     def predict_step(self, batch, batch_idx):
-        times, Y, mask, label, bridge_info = self.process_batch(batch)
-        preds, _, _, embedding = self(times, Y, mask, eval_mode=False)
+        times, Y, mask, label, bridge_info, Y_past, Y_future, mask_past, mask_future = self.process_batch(
+            batch, forecast_mode=True)
         
-        if self.regression_mode:
-            if len(label.shape)==1:
-                label = label[:,None]
-            loss = self.loss_class(preds,label)
-        else:
-            if preds.shape[-1] == 1:
-                preds = preds[:, 0]
-                loss = self.loss_class(preds.double(), label)
-            else:
-                loss = self.loss_class(preds.double(), label.long())
-        return {"Y": Y, "preds": preds, "T": times, "labels": label}
+        preds, _, _, _ = self(times, Y_past, mask_past, eval_mode=False)
+        _, _, _, cn_embedding = self(times, Y, mask, eval_mode=False)
+
+        if self.direct_classif:
+            last_idx = mask_past.shape[1] - torch.flip(mask_past,dims=(1,)).argmax(1) - 1
+            last_values = torch.gather(Y_past,dim=1, index = last_idx.unsqueeze(1))
+            preds = last_values.repeat((1,Y_future.shape[1],1))
+
+        cn_embedding = torch.stack(torch.chunk(
+            cn_embedding, self.output_dim, -1), -1)
+
+        Tmax = times.max()
+        Nc = cn_embedding.shape[1]  # number of coefficients
+        backward_window = 5
+        mask_rec = (times-Tmax+backward_window)>0
+        rec_span = times[mask_rec]
+        recs = [np.polynomial.legendre.legval(
+            (2/self.Delta)*(rec_span-Tmax).cpu().numpy() + 1, (cn_embedding[..., out_dim].cpu().numpy() * [(2*n+1)**0.5 for n in range(Nc)]).T) for out_dim in range(self.output_dim)]
+
+        recs = torch.Tensor(np.stack(recs,-1))
+        
+        return {"Y_future":Y_future, "preds":preds, "mask_future":mask_future,"pred_rec":recs,"Y_rec":Y[:,mask_rec,:],"mask_rec":mask[:,mask_rec,:]} 
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)

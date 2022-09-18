@@ -184,7 +184,7 @@ def process_mimic_dataset(seed=421):
 
 
 class MIMICDataset(Dataset):
-    def __init__(self, fold_type="train", spline_mode=False, pre_compute_ode=False, label_type="mort_hosp", irregular_rate=1, **kwargs):
+    def __init__(self, fold_type="train", spline_mode=False, pre_compute_ode=False, label_type="mort_hosp", irregular_rate=1, forecast_mode = False, **kwargs):
         super().__init__()
         df_traj = pd.read_pickle(os.path.join(
             DATA_DIR, 'physionet.org', "processed", f"lvl2_{fold_type}.pkl"))
@@ -207,6 +207,7 @@ class MIMICDataset(Dataset):
         self.mask = self.X[:, 0::3].permute(0, 2, 1)
         self.sequences = self.X[:, 1::3].permute(0, 2, 1)
 
+        self.Nobs = len(self.xobs)
         N = self.X.shape[0]
         # only taking observations where all dimensions are observed
         #self.mask = self.mask.all(-1).float()
@@ -223,6 +224,7 @@ class MIMICDataset(Dataset):
 
         self.kwargs = kwargs
         self.pre_compute_ode = pre_compute_ode
+        self.forecast_mode = forecast_mode
 
     def pre_compute_ode_embeddings(self, **kwargs):
         idxs = torch.chunk(torch.arange(self.sequences.shape[0]), 20)
@@ -259,6 +261,16 @@ class MIMICDataset(Dataset):
         elif self.spline_mode:
             return_dict = {"Tobs": self.xobs, "Yobs": self.sequences[idx],
                            "mask": self.mask[idx], "label": self.labels[idx], "coeffs": self.coeffs[idx]}
+        elif self.forecast_mode:
+            Y_future = self.sequences[idx].clone()
+            mask_future = self.mask[idx].clone()
+            mask_past = self.mask[idx].clone()
+            Y_past = self.sequences[idx].clone()
+            Y_future[int(0.8*self.Nobs):] = 0
+            Y_past[:int(0.8*self.Nobs)] = 0
+            mask_future[int(0.8*self.Nobs):] = 0
+            mask_past[:int(0.8*self.Nobs)] = 0
+            return {"Tobs": self.xobs, "Yobs": self.sequences[idx], "label": self.labels[idx], "mask": self.mask[idx], "Y_future": Y_future, "mask_future": mask_future, "Y_past": Y_past, "mask_past": mask_past}
         else:
             return_dict = {
                 "Tobs": self.xobs, "Yobs": self.sequences[idx], "mask": self.mask[idx], "label": self.labels[idx]}
@@ -266,7 +278,7 @@ class MIMICDataset(Dataset):
 
 
 class MIMICDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size=128, seed=42, num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, regression_mode=False, **kwargs):
+    def __init__(self, batch_size=128, seed=42, num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, regression_mode=False, forecast_mode = False, **kwargs):
 
         super().__init__()
         self.batch_size = batch_size
@@ -280,6 +292,7 @@ class MIMICDataModule(pl.LightningDataModule):
         self.num_dims = 10
         self.test_only = False
         self.regression_mode = regression_mode
+        self.forecast_mode = forecast_mode
 
     def set_test_only(self):
         self.test_only = True
@@ -287,12 +300,12 @@ class MIMICDataModule(pl.LightningDataModule):
     def prepare_data(self):
 
         train_dataset = MIMICDataset(fold_type="train", irregular_rate=self.irregular_rate,
-                                     spline_mode=self.spline_mode, **self.kwargs)
+                                     spline_mode=self.spline_mode, forecast_mode = self.forecast_mode,**self.kwargs)
         val_dataset = MIMICDataset(fold_type="dev", irregular_rate=self.irregular_rate,
-                                   spline_mode=self.spline_mode, **self.kwargs)
+                                   spline_mode=self.spline_mode, forecast_mode= self.forecast_mode, **self.kwargs)
 
         test_dataset = MIMICDataset(
-            fold_type="test", irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, **self.kwargs)
+            fold_type="test", irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, forecast_mode = self.forecast_mode, **self.kwargs)
 
         if self.pre_compute_ode:
             if not self.test_only:
@@ -356,6 +369,8 @@ class MIMICDataModule(pl.LightningDataModule):
         parser.add_argument('--pre_compute_ode', type=str2bool, default=False,
                             help="if True, pre-computes the ODE embedding of the splines")
         parser.add_argument('--regression_mode', type=str2bool, default=False,
+                            help="if True, splits the sequence into a past and future part")
+        parser.add_argument('--forecast_mode', type=str2bool, default=False,
                             help="if True, splits the sequence into a past and future part")
         return parser
 

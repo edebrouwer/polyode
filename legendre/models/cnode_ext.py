@@ -192,6 +192,8 @@ class CNODExtmod(nn.Module):
         """
         h = torch.cat(
             (torch.zeros(Y.shape[0], self.input_dim * self.Nc, device=Y.device), torch.zeros(Y.shape[0], self.input_dim * self.Nc + self.input_dim + self.uncertainty_dims, device=Y.device)), -1)
+        last_h = torch.cat(
+            (torch.zeros(Y.shape[0], self.input_dim * self.Nc, device=Y.device), torch.zeros(Y.shape[0], self.input_dim * self.Nc + self.input_dim + self.uncertainty_dims, device=Y.device)), -1)
         if self.uncertainty_mode:
             h = torch.cat((h, torch.zeros(
                 Y.shape[0], self.uncertainty_dims * self.Nc, device=Y.device)), -1)
@@ -233,9 +235,11 @@ class CNODExtmod(nn.Module):
                 signal = Y[:,i_t] * mask[:,i_t] + signal_no_update * (1-mask[:,i_t])
                 driver = (driver_update * mask[:,i_t][:,None,:] + driver_no_update * (1-mask[:,i_t][:,None,:])).reshape(driver_update.shape[0], -1)
                 h = torch.cat((h_cn, signal, driver), -1)
+                last_h[mask[:,i_t,:].any(1)] = h[mask[:,i_t,:].any(1)]
             else:
                 h = h_updated * mask[:, i_t][..., None] + \
                 h_no_update * (1-mask[:, i_t][..., None])
+                last_h[mask[:, i_t].any()] = h[mask[:, i_t].any()]
 
             current_time = time
 
@@ -250,7 +254,7 @@ class CNODExtmod(nn.Module):
         y_traj = torch.cat(y_traj, 1)
         times_traj = torch.cat(times_traj, 0)
 
-        return y_preds, y_traj, times_traj, h[..., :self.input_dim * self.Nc], h[..., -self.uncertainty_dims*self.Nc], y_uncertainty, y_uncertainty_traj
+        return y_preds, y_traj, times_traj, last_h[..., :self.input_dim * self.Nc], h[..., -self.uncertainty_dims*self.Nc], y_uncertainty, y_uncertainty_traj
 
 
 class CNODExt(pl.LightningModule):
@@ -333,10 +337,26 @@ class CNODExt(pl.LightningModule):
 
         # assert len(torch.unique(T)) == T.shape[1]
         # times = torch.sort(torch.unique(T))[0]
-        preds, preds_traj, times_traj, cn_embedding, uncertainty_embedding, uncertainty_pred, uncertainty_traj = self(
+        preds, preds_traj, times_traj, _, uncertainty_embedding, uncertainty_pred, uncertainty_traj = self(
             times, Y_past, mask_past, bridge_info=bridge_info)
-        import ipdb
-        ipdb.set_trace()
+        
+        _, _, times_traj, cn_embedding, _, _, _ = self(
+            times, Y, mask, bridge_info=bridge_info)
+        
+        cn_embedding = torch.stack(torch.chunk(
+            cn_embedding, self.output_dim, -1), -1)
+
+        Tmax = times.max()
+        Nc = cn_embedding.shape[1]  # number of coefficients
+        backward_window = 5
+        mask_rec = (times-Tmax+backward_window)>0
+        rec_span = times[mask_rec]
+        #rec_span = np.linspace(Tmax-self.Delta, Tmax)
+        recs = [np.polynomial.legendre.legval(
+            (2/self.Delta)*(rec_span-Tmax).cpu().numpy() + 1, (cn_embedding[..., out_dim].cpu().numpy() * [(2*n+1)**0.5 for n in range(Nc)]).T) for out_dim in range(self.output_dim)]
+        recs = torch.Tensor(np.stack(recs,-1))
+        
+        return {"Y_future":Y_future, "preds":preds, "mask_future":mask_future, "uncertainty_pred":uncertainty_pred,"pred_rec":recs,"Y_rec":Y[:,mask_rec,:],"mask_rec":mask[:,mask_rec,:]} 
 
     def training_step(self, batch, batch_idx):
 
@@ -378,9 +398,12 @@ class CNODExt(pl.LightningModule):
         preds_traj = outputs[0]["preds_traj"]
         times_traj = outputs[0]["times_traj"]
         observed_mask = (mask == 1)
-        times = T_sample
+        if len(mask.shape)==3:
+            times = T_sample[mask[0].any(1)]
+        else:
+            times = T_sample[mask[0].bool()]
 
-        Tmax = T_sample.max().cpu().numpy()
+        Tmax = times.max().cpu().numpy()
         Nc = cn_embedding.shape[1]  # number of coefficients
         rec_span = np.linspace(Tmax-self.Delta, Tmax)
         recs = [np.polynomial.legendre.legval(

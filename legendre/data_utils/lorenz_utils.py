@@ -83,15 +83,73 @@ def generate_path(start, Nt, Nobs, irregular_rate=1, regression_mode = False):
     yobs = np.stack([xsobs, ysobs, zsobs], axis=-1)
     return xobs, yobs, label, mask
 
+def generate_96_path(start, Nt, Nobs, irregular_rate=1, regression_mode = False):
+    """
+    Nt : Number of time points to simulate
+    Nobs : Number of observations to select
+    phase : phase to add to this particular time series
+    irregular_rate : what is the rate of selection of observations (if 1, then the data is regularly sampled)
+    """
+    N = 5
+    F = 8
+    def lorenz96(x, t):
+        # Setting up vector
 
-def generate_dataset(N, Nt, Nobs, irregular_rate, regression_mode = False):
+        d = np.zeros(N)
+        # Loops over indices (with operations and Python underflow indexing handling edge cases)
+        for i in range(N):
+            d[i] = (x[(i + 1) % N] - x[i - 2]) * x[i - 1] - x[i] + F
+        return d
+
+    dt = 0.01
+    num_steps = 10000
+
+    # Need one more for the initial values
+    #xs = np.empty(num_steps + 1)
+    #ys = np.empty(num_steps + 1)
+    #zs = np.empty(num_steps + 1)
+
+    # Set initial values
+    #xs[0], ys[0], zs[0] = (0., 1., 1.05)
+
+    x0 = F * np.ones(N)
+    x0[0] += 0.01
+    t = np.arange(0.0,num_steps*dt,dt)
+    x = odeint(lorenz96, x0, t)
+
+    x = (x[start:start+Nt]-x.mean())/x.std()
+
+    xfull = np.linspace(1, 10, Nt)
+    temporal_mask = np.zeros(Nt)
+    temporal_mask[::Nt//Nobs] = 1
+    xobs = xfull[temporal_mask == 1]
+
+    xs = x[temporal_mask==1]
+
+    if regression_mode:
+        label = xs[int(0.6*Nobs),-1]
+    else:
+        label = (xs[int(0.6*Nobs),-1] > 0.).astype(float)
+    mask = np.random.binomial(
+        1, irregular_rate, size=xobs.shape[0]).astype(bool)
+    mask[-1] = 1
+
+    xs[~mask] = np.zeros_like(xs[~mask])
+
+    yobs = xs 
+    return xobs, yobs, label, mask
+
+def generate_dataset(N, Nt, Nobs, irregular_rate, regression_mode = False, mode_96 = False):
     Xobs = []
     Yobs = []
     labels = []
     masks = []
     for n in range(N):
         start = np.abs(int(np.random.random()*10000-2*Nt))
-        xobs, yobs, label, mask = generate_path(
+        if mode_96:
+            xobs, yobs, label, mask = generate_96_path(start, Nt, Nobs, irregular_rate = irregular_rate, regression_mode = regression_mode)
+        else:
+            xobs, yobs, label, mask = generate_path(
             start, Nt, Nobs, irregular_rate=irregular_rate, regression_mode = regression_mode)
 
         Xobs.append(xobs)
@@ -103,7 +161,7 @@ def generate_dataset(N, Nt, Nobs, irregular_rate, regression_mode = False):
     return np.stack(Xobs), np.stack(Yobs), np.stack(labels), np.stack(masks)
 
 class LorenzDataset(Dataset):
-    def __init__(self, N, Nt=500, Nobs=20, noise_std=0., lorenz_dims = 3,seed=421, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False,  regression_mode = False, **kwargs):
+    def __init__(self, N, Nt=500, Nobs=20, noise_std=0., lorenz_dims = 3,seed=421, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False,  regression_mode = False, mode_96 = False, **kwargs):
         super().__init__()
         self.N = N
         self.Nt = Nt
@@ -111,7 +169,7 @@ class LorenzDataset(Dataset):
         self.spline_mode = spline_mode
 
         self.xobs, self.sequences, self.labels, self.masks = generate_dataset(
-                N, Nt, Nobs, irregular_rate=irregular_rate, regression_mode = regression_mode)
+                N, Nt, Nobs, irregular_rate=irregular_rate, regression_mode = regression_mode, mode_96 = mode_96)
 
         self.sequences = self.sequences[:,:,:lorenz_dims]
         
@@ -126,6 +184,7 @@ class LorenzDataset(Dataset):
         self.regression_mode = regression_mode
         
         self.bridge_ode = False
+        self.mode_96 = mode_96
 
     def pre_compute_ode_embeddings(self, **kwargs):
         idxs = torch.chunk(torch.arange(self.sequences.shape[0]), 20)
@@ -272,4 +331,6 @@ class LorenzDataModule(pl.LightningDataModule):
                             help="if True, splits the sequence into a past and future part")
         parser.add_argument('--regression_mode', type=str2bool, default=False,
                             help="if True, splits the sequence into a past and future part")
+        parser.add_argument('--mode_96', type=str2bool, default=False,
+                            help="if True, uses Lorenz96")
         return parser
