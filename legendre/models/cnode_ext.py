@@ -474,6 +474,15 @@ class CNODExt(pl.LightningModule):
         return parser
 
 
+class MultiLabelCrossEntropyLoss():
+    def __init__(self):
+        self.loss1 = torch.nn.CrossEntropyLoss()
+        self.loss2 = torch.nn.CrossEntropyLoss()
+
+    def __call__(self, inputs, targets):
+        import ipdb; ipdb.set_trace()
+        return 0.5*(self.loss1(inputs[:,0],targets[:,0].float()) + self.loss2(inputs[:,1],targets[:,1].float()))
+
 class CNODExtClassification(pl.LightningModule):
     def __init__(self, lr,
                  hidden_dim,
@@ -502,6 +511,9 @@ class CNODExtClassification(pl.LightningModule):
             elif self.hparams["data_type"] == "Character":
                 self.loss_class = torch.nn.CrossEntropyLoss()
                 output_dim = 20
+            elif self.hparams["data_type"] == "Activity":
+                self.loss_class = MultiLabelCrossEntropyLoss()
+                output_dim = 6*2
             else:
                 self.loss_class = torch.nn.BCEWithLogitsLoss()
                 output_dim = 1
@@ -519,8 +531,6 @@ class CNODExtClassification(pl.LightningModule):
         preds = self.classif_model(embeddings)
         return preds
 
-        preds = self.classif_model(embedding)
-        return preds
 
     def predict_step(self, batch, batch_idx):
         times, Y, mask, label, embeddings = batch
@@ -578,6 +588,10 @@ class CNODExtClassification(pl.LightningModule):
                 accuracy = accuracy_score(
                     labels.long().cpu().numpy(), preds.cpu().numpy())
                 self.log("val_acc", accuracy, on_epoch=True)
+            elif self.hparams["data_type"] == "Activity" :
+                import ipdb; ipdb.set_trace()
+                auc1 = roc_auc_score(labels[:,0].cpu().numpy(), preds[:,0].cpu().numpy())
+                auc2 = roc_auc_score(labels[:,0].cpu().numpy(), preds[:,1].cpu().numpy())
             else:
                 auc = roc_auc_score(labels.cpu().numpy(), preds.cpu().numpy())
                 self.log("val_auc", auc, on_epoch=True)

@@ -22,6 +22,7 @@ from legendre.data_utils.pMNIST_utils import pMNISTDataModule
 from legendre.data_utils.character_utils import CharacterTrajDataModule
 from legendre.data_utils.mimic_utils import MIMICDataModule
 from legendre.data_utils.lorenz_utils import LorenzDataModule
+from legendre.data_utils.activity_utils import ActivityDataModule
 from legendre.models.rnn import RNN, RNNClassification
 from legendre.models.hippo import HIPPO, HippoClassification
 
@@ -141,6 +142,8 @@ if __name__ == "__main__":
         data_cls = MIMICDataModule
     elif partial_args.data_type == "Lorenz":
         data_cls = LorenzDataModule
+    elif partial_args.data_type == "Activity":
+        data_cls = ActivityDataModule
 
     if partial_args.model_type == "CNODE":
         model_cls = CNODEClassification

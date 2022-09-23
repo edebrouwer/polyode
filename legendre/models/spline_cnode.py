@@ -15,7 +15,7 @@ from sklearn.metrics import roc_auc_score, accuracy_score
 from legendre.utils import str2bool
 
 
-def evaluate_spline(t, c, x_eval):
+def evaluate_spline(t, c, x_eval, spline_type = "Hermite"):
     """
     t are the original break points
     c are the coefficients
@@ -36,10 +36,17 @@ def evaluate_spline(t, c, x_eval):
         print("Warning, overflow in the integration time")
         y_ = torch.zeros((c.shape[0], c.shape[-1]), device=c.device)
     else:
-        x_shifted = (x_eval-t[interval_idx])[None]
-        y_ = c[:, -1, interval_idx, :] + c[:, -2, interval_idx, :] * x_shifted + c[:, -
-                                                                                   3, interval_idx, :] * x_shifted**2 + c[:, -4, interval_idx, :] * x_shifted**3
+        if spline_type == "Hermite":
+            x_shifted = (x_eval-t[interval_idx])[None]
+            y_ = c[:, -1, interval_idx, :] + c[:, -2, interval_idx, :] * x_shifted + c[:, -
+                                                                                3, interval_idx, :] * x_shifted**2 + c[:, -4, interval_idx, :] * x_shifted**3
+        elif spline_type == "Constant":
+            y_ = c[:,0,interval_idx,:]
+        elif spline_type == "Linear":
+            x_shifted = (x_eval-t[interval_idx])[None]
+            y_ = c[:,0,interval_idx,:] * x_shifted + c[:,1,interval_idx,:]
     return y_
+
 
 
 class SplineCNODEClass(pl.LightningModule):
@@ -50,6 +57,7 @@ class SplineCNODEClass(pl.LightningModule):
                  Delta,
                  num_dims,
                  regression_mode = False,
+                 spline_type = "Hermite",
                  **kwargs
                  ):
 
@@ -74,6 +82,7 @@ class SplineCNODEClass(pl.LightningModule):
                         ((2*k+1)**(0.5)) * (-1)**(n-k)
 
         self.regression_mode = regression_mode
+        self.spline_type = spline_type
         if regression_mode:
             self.loss_class = torch.nn.MSELoss()
             output_dim = 1
@@ -102,7 +111,7 @@ class SplineCNODEClass(pl.LightningModule):
         return torch.cat(outs, 1)
 
     def integrate_ode(self, times, Y, mask, coeffs):
-        def eval_fun(t): return evaluate_spline(times, coeffs, t)
+        def eval_fun(t): return evaluate_spline(times, coeffs, t, spline_type = self.spline_type)
         c0 = torch.zeros(Y.shape[0], self.Nc * self.num_dims, device=Y.device)
         outputs = odeint(lambda t, cn: self.ode_fun(t, cn, eval_fun), c0, times,
                          method=self.hparams["method"], options={"step_size": self.hparams["delta_t"]})
@@ -188,7 +197,7 @@ class SplineCNODEClass(pl.LightningModule):
                 x_eval = torch.linspace(
                     times[0], times[-1], 1000, device=times.device)
                 spline_eval = torch.cat(
-                    [evaluate_spline(times, coeffs, x_eval_) for x_eval_ in x_eval], -1)
+                    [evaluate_spline(times, coeffs, x_eval_, spline_type = self.spline_type) for x_eval_ in x_eval], -1)
 
                 # ----- Plotting the filtered trajectories ----
                 fig = go.Figure()

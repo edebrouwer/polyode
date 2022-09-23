@@ -80,8 +80,36 @@ def get_hermite_spline(xobs, yobs, mask):
     spline_new = CubicHermiteSpline(x=xobs, y=ynew, dydx=dydx_new)
     return spline_new.c
 
+def get_constant_spline(xobs,yobs,mask):
+    """_summary_
 
-def generate_spline_dataset(N, Nt, Nobs, irregular_rate, regression_mode = False):
+    Args:
+        xobs (_type_): _description_
+        yobs (_type_): _description_
+        mask (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """    
+    return yobs[:-1][None,:]
+
+def get_linear_spline(xobs,yobs,mask):
+    """_summary_
+
+    Args:
+        xobs (_type_): _description_
+        yobs (_type_): _description_
+        mask (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    slope = yobs[1:]-yobs[:-1] / (xobs[1:]-xobs[:-1])
+    intercpt = yobs[:-1]
+    return np.stack((slope,intercpt)) 
+
+
+def generate_spline_dataset(N, Nt, Nobs, irregular_rate, regression_mode = False, spline_type = 'Hermite'):
     """_summary_
     Args:
         N (_type_): _description_
@@ -102,8 +130,15 @@ def generate_spline_dataset(N, Nt, Nobs, irregular_rate, regression_mode = False
         x, y, xobs, yobs, label, mask = generate_path(
             phase, Nt, Nobs, irregular_rate=irregular_rate, regression_mode = regression_mode)
 
-        coeffs = torch.stack(
+        if spline_type == "Hermite":
+            coeffs = torch.stack(
             [torch.Tensor(get_hermite_spline(xobs, yobs, mask))], -1)
+        elif spline_type=="Constant":
+            coeffs = torch.stack(
+            [torch.Tensor(get_constant_spline(xobs, yobs, mask))], -1)
+        elif spline_type=="Linear":
+            coeffs = torch.stack(
+            [torch.Tensor(get_linear_spline(xobs, yobs, mask))], -1)
 
         Xobs.append(xobs)
         Yobs.append(yobs)
@@ -169,7 +204,7 @@ def collate_irregular_batch(batch):
 
 
 class SimpleTrajDataset(Dataset):
-    def __init__(self, N, Nt=200, Nobs=10, noise_std=0., seed=421, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, regression_mode = False, **kwargs):
+    def __init__(self, N, Nt=200, Nobs=10, noise_std=0., seed=421, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, regression_mode = False, spline_type = "Hermite", **kwargs):
         super().__init__()
         self.N = N
         self.Nt = Nt
@@ -179,7 +214,7 @@ class SimpleTrajDataset(Dataset):
         np.random.seed(seed)
         if spline_mode:
             self.Tobs, self.Yobs, self.labels, self.masks, self.coeffs = generate_spline_dataset(
-                N, Nt, Nobs, irregular_rate=irregular_rate, regression_mode = regression_mode)
+                N, Nt, Nobs, irregular_rate=irregular_rate, regression_mode = regression_mode, spline_type = spline_type)
         else:
             self.Tobs, self.Yobs, self.labels, self.masks = generate_dataset(
                 N, Nt, Nobs, irregular_rate=irregular_rate, regression_mode = regression_mode)
@@ -188,6 +223,7 @@ class SimpleTrajDataset(Dataset):
         self.pre_compute_ode = pre_compute_ode
         self.num_dims = 1
         self.forecast_mode = forecast_mode
+        self.spline_type = spline_type
 
         if kwargs.get("bridge_ode", False):
             self.bridge_ode = True
@@ -244,7 +280,7 @@ class SimpleTrajDataset(Dataset):
         else:
             if "num_dims" not in self.kwargs:
                 self.kwargs["num_dims"] = self.num_dims
-            spline_ode = SplineCNODEClass(**self.kwargs).cuda()
+            spline_ode = SplineCNODEClass(**self.kwargs, spline_type = self.spline_type).cuda()
             #self.coeffs = torch.stack(self.coeffs)
             for idx in tqdm.tqdm(idxs):
                 embedding = spline_ode.integrate_ode(torch.Tensor(self.Tobs[0]).cuda(), torch.Tensor(
@@ -280,7 +316,7 @@ class SimpleTrajDataset(Dataset):
 
 
 class SimpleTrajDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size=128, seed=42, N=1000,  noise_std=0.,  num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, regression_mode = False, **kwargs):
+    def __init__(self, batch_size=128, seed=42, N=1000,  noise_std=0.,  num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, regression_mode = False, spline_type = "Hermite", **kwargs):
 
         super().__init__()
         self.batch_size = batch_size
@@ -293,6 +329,7 @@ class SimpleTrajDataModule(pl.LightningDataModule):
         self.irregular_rate = irregular_rate
         self.spline_mode = spline_mode
         self.regression_mode = regression_mode
+        self.spline_type = spline_type
 
         self.pre_compute_ode = pre_compute_ode
         self.kwargs = kwargs
@@ -304,7 +341,7 @@ class SimpleTrajDataModule(pl.LightningDataModule):
     def prepare_data(self):
 
         dataset = SimpleTrajDataset(N=self.N, noise_std=self.noise_std, seed=self.seed,
-                                    irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, pre_compute_ode=self.pre_compute_ode, regression_mode = self.regression_mode, **self.kwargs)
+                                    irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, pre_compute_ode=self.pre_compute_ode, regression_mode = self.regression_mode, spline_type = self.spline_type, **self.kwargs)
 
         if self.pre_compute_ode:
             dataset.pre_compute_ode_embeddings(**self.kwargs)
@@ -370,4 +407,7 @@ class SimpleTrajDataModule(pl.LightningDataModule):
                             help="if True, splits the sequence into a past and future part")
         parser.add_argument('--regression_mode', type=str2bool, default=False,
                             help="if True, generates the regression label")
+        parser.add_argument('--spline_type', type=str, default="Hermite",
+                            help="if spline_mode is True, choose the type of spline - Linear - Constant or Hermite")
+
         return parser

@@ -9,7 +9,7 @@ from legendre.utils import str2bool
 from legendre.models.spline_cnode import SplineCNODEClass
 from scipy.interpolate import CubicHermiteSpline, CubicSpline
 import tqdm
-from legendre.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch
+from legendre.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch, get_constant_spline, get_linear_spline
 
 
 def generate_path(start, Nt, Nobs, irregular_rate=1, regression_mode = False):
@@ -161,7 +161,7 @@ def generate_dataset(N, Nt, Nobs, irregular_rate, regression_mode = False, mode_
     return np.stack(Xobs), np.stack(Yobs), np.stack(labels), np.stack(masks)
 
 class LorenzDataset(Dataset):
-    def __init__(self, N, Nt=500, Nobs=20, noise_std=0., lorenz_dims = 3,seed=421, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False,  regression_mode = False, mode_96 = False, **kwargs):
+    def __init__(self, N, Nt=500, Nobs=20, noise_std=0., lorenz_dims = 3,seed=421, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False,  regression_mode = False, mode_96 = False, spline_type = "Hermite", **kwargs):
         super().__init__()
         self.N = N
         self.Nt = Nt
@@ -174,7 +174,14 @@ class LorenzDataset(Dataset):
         self.sequences = self.sequences[:,:,:lorenz_dims]
         
         if spline_mode:
-            self.coeffs = [torch.stack([torch.Tensor(get_hermite_spline(
+            if spline_type=="Hermite":
+                self.coeffs = [torch.stack([torch.Tensor(get_hermite_spline(
+                self.xobs[n], self.sequences[n, :, dim], self.masks[n, :])) for dim in range(self.sequences.shape[-1])], -1) for n in range(N)]
+            elif spline_type=="Constant":
+                self.coeffs = [torch.stack([torch.Tensor(get_constant_spline(
+                self.xobs[n], self.sequences[n, :, dim], self.masks[n, :])) for dim in range(self.sequences.shape[-1])], -1) for n in range(N)]
+            elif spline_type=="Linear":
+                self.coeffs = [torch.stack([torch.Tensor(get_linear_spline(
                 self.xobs[n], self.sequences[n, :, dim], self.masks[n, :])) for dim in range(self.sequences.shape[-1])], -1) for n in range(N)]
 
         self.kwargs = kwargs
@@ -182,6 +189,7 @@ class LorenzDataset(Dataset):
         self.num_dims = lorenz_dims
         self.forecast_mode = forecast_mode
         self.regression_mode = regression_mode
+        self.spline_type = spline_type
         
         self.bridge_ode = False
         self.mode_96 = mode_96
@@ -201,7 +209,7 @@ class LorenzDataset(Dataset):
         else:
             if "num_dims" not in self.kwargs:
                 self.kwargs["num_dims"] = self.num_dims
-            spline_ode = SplineCNODEClass(**self.kwargs).cuda()
+            spline_ode = SplineCNODEClass(**self.kwargs, spline_type = self.spline_type).cuda()
             self.coeffs = torch.stack(self.coeffs)
             for idx in tqdm.tqdm(idxs):
                 embedding = spline_ode.integrate_ode(torch.Tensor(self.xobs[0]).cuda(), torch.Tensor(
@@ -223,21 +231,21 @@ class LorenzDataset(Dataset):
         elif self.spline_mode:
             return {"Tobs": self.xobs[idx], "Yobs": self.sequences[idx], "label": self.labels[idx], "mask": self.masks[idx], "coeffs": self.coeffs[idx]}
         elif self.forecast_mode:
-            Y_future = self.sequences[idx].clone()
-            mask_future = self.masks[idx].clone()
-            mask_past = self.masks[idx].clone()
-            Y_past = self.sequences[idx].clone()
-            Y_future[(0.8*self.Nobs):] = 0
-            Y_past[:(0.8*self.Nobs)] = 0
-            mask_future[(0.8*self.Nobs):] = 0
-            mask_past[:(0.8*self.Nobs)] = 0
+            Y_future = torch.Tensor(self.sequences[idx]).clone()
+            mask_future = torch.Tensor(self.masks[idx]).clone()
+            mask_past = torch.Tensor(self.masks[idx]).clone()
+            Y_past = torch.Tensor(self.sequences[idx]).clone()
+            Y_future[int(0.8*self.Nobs):] = 0
+            Y_past[:int(0.8*self.Nobs)] = 0
+            mask_future[int(0.8*self.Nobs):] = 0
+            mask_past[:int(0.8*self.Nobs)] = 0
             return {"Tobs": self.xobs[idx], "Yobs": self.sequences[idx], "label": self.labels[idx], "mask": self.masks[idx], "Y_future": Y_future, "mask_future": mask_future, "Y_past": Y_past, "mask_past": mask_past}
         else:
             return {"Tobs": self.xobs[idx], "Yobs": self.sequences[idx], "label": self.labels[idx], "mask": self.masks[idx]}
 
 
 class LorenzDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size=128, seed=42, N=1000, lorenz_dims = 3, noise_std=0.,  num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, Nobs = 20, regression_mode = False,**kwargs):
+    def __init__(self, batch_size=128, seed=42, N=1000, lorenz_dims = 3, noise_std=0.,  num_workers=4, irregular_rate=1., spline_mode=False, pre_compute_ode=False, forecast_mode=False, Nobs = 20, regression_mode = False, spline_type = "Hermite",**kwargs):
 
         super().__init__()
         self.batch_size = batch_size
@@ -255,6 +263,8 @@ class LorenzDataModule(pl.LightningDataModule):
         self.kwargs = kwargs
         self.num_dims = lorenz_dims
         self.regression_mode = regression_mode
+        self.forecast_mode = forecast_mode
+        self.spline_type = spline_type
 
     
     def set_test_only(self):
@@ -263,7 +273,7 @@ class LorenzDataModule(pl.LightningDataModule):
     def prepare_data(self):
 
         dataset = LorenzDataset(N=self.N, Nobs = self.Nobs,noise_std=self.noise_std, seed=self.seed, lorenz_dims = self.num_dims,
-                                    irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, pre_compute_ode=self.pre_compute_ode, regression_mode = self.regression_mode, **self.kwargs)
+                                    irregular_rate=self.irregular_rate, spline_mode=self.spline_mode, pre_compute_ode=self.pre_compute_ode, regression_mode = self.regression_mode, forecast_mode = self.forecast_mode, spline_type = self.spline_type, **self.kwargs)
 
         if self.pre_compute_ode:
             dataset.pre_compute_ode_embeddings(**self.kwargs)
@@ -333,4 +343,6 @@ class LorenzDataModule(pl.LightningDataModule):
                             help="if True, splits the sequence into a past and future part")
         parser.add_argument('--mode_96', type=str2bool, default=False,
                             help="if True, uses Lorenz96")
+        parser.add_argument('--spline_type', type=str, default="Hermite",
+                            help="if spline_mode is True, choose the type of spline - linear - constant or hermite")
         return parser

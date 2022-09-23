@@ -505,9 +505,10 @@ class HIPPO(pl.LightningModule):
         _, _, _, cn_embedding = self(times, Y, mask, eval_mode=False)
 
         if self.direct_classif:
-            last_idx = mask_past.shape[1] - torch.flip(mask_past,dims=(1,)).argmax(1) - 1
-            last_values = torch.gather(Y_past,dim=1, index = last_idx.unsqueeze(1))
-            preds = last_values.repeat((1,Y_future.shape[1],1))
+            preds, _, _, _ = self(times, Y, mask, eval_mode=False)
+            #last_idx = mask_past.shape[1] - torch.flip(mask_past,dims=(1,)).argmax(1) - 1
+            #last_values = torch.gather(Y_past,dim=1, index = last_idx.unsqueeze(1))
+            #preds = last_values.repeat((1,Y_future.shape[1],1))
 
         cn_embedding = torch.stack(torch.chunk(
             cn_embedding, self.output_dim, -1), -1)
@@ -521,9 +522,11 @@ class HIPPO(pl.LightningModule):
             (2/self.Delta)*(rec_span-Tmax).cpu().numpy() + 1, (cn_embedding[..., out_dim].cpu().numpy() * [(2*n+1)**0.5 for n in range(Nc)]).T) for out_dim in range(self.output_dim)]
 
         recs = torch.Tensor(np.stack(recs,-1))
-        
-        return {"Y_future":Y_future, "preds":preds, "mask_future":mask_future,"pred_rec":recs,"Y_rec":Y[:,mask_rec,:],"mask_rec":mask[:,mask_rec,:]} 
-
+        if len(mask.shape)==3:
+            return {"Y_future":Y_future, "preds":preds, "mask_future":mask_future,"pred_rec":recs,"Y_rec":Y[:,mask_rec,:],"mask_rec":mask[:,mask_rec,:], "Y":Y, "mask":mask, "labels":label}
+        else:
+            return {"Y_future":Y_future, "preds":preds, "mask_future":mask_future,"pred_rec":recs,"Y_rec":Y[:,mask_rec,:],"mask_rec":mask[:,mask_rec],"Y":Y, "mask":mask, "labels":label}
+    
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
 
