@@ -6,7 +6,7 @@ from scipy.integrate import odeint
 from torch.utils.data import Dataset, DataLoader, Subset
 from legendre.utils import str2bool
 
-from legendre.models.spline_cnode import SplineCNODEClass
+from legendre.models.spline_cnode import SplineCNODEClass, evaluate_spline
 from scipy.interpolate import CubicHermiteSpline, CubicSpline
 import tqdm
 from legendre.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch, get_constant_spline, get_linear_spline
@@ -346,3 +346,9 @@ class LorenzDataModule(pl.LightningDataModule):
         parser.add_argument('--spline_type', type=str, default="Hermite",
                             help="if spline_mode is True, choose the type of spline - linear - constant or hermite")
         return parser
+
+
+if __name__ == "__main__":
+    ds = LorenzDataset(N=1000, Nt=500, Nobs=20, noise_std=0., lorenz_dims = 3,seed=421, irregular_rate=0.4, spline_mode=True, pre_compute_ode=False, forecast_mode=False,  regression_mode = False, mode_96 = False, spline_type = "Hermite")
+    import ipdb; ipdb.set_trace()
+    recs = evaluate_spline(ds.xobs, ds.coeffs,np.linspace(0,10), spline_type = "Hermite")
