@@ -1,6 +1,6 @@
 # Anamnesic Neural Differential Equations with Orthogonal Polynomials Projections
 
-![alt text](https://github.com/edebrouwer/orthopoly/blob/main/Fig1.png)
+![alt text](Fig1.png)
 
 
 ## Installing the package
