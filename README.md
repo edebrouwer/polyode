@@ -27,13 +27,15 @@ You are all set !
 
 The experiments showed in the paper happen in two steps. The first steps trains the PolyODE on forecasting. The second step freezes the embeddings learnt by this representation and trains an auxiliary classifier or regressor depeding on the nature of the downstream task.
 
+The models are logged using `wandb` so at the moment you'll need to have an account for logging your runs. You can provide your user name as argument.
+
 ### Forecasting. 
 
 To train the PolyODE on forecasting : 
 
 `cd polyode/train_scripts`
 
-`poetry run python train_node.py --model_type=CNODExt --data_type={Lorenz,SimpleTraj,MIMIC} --irregular_rate=0.3 --method=implicit_adams`
+`poetry run python train_node.py --model_type=CNODExt --data_type={Lorenz,SimpleTraj,MIMIC} --irregular_rate=0.3 --method=implicit_adams --wandb_user=YOUR_USER_NAME`
 
 The following commands are used for the different datasets:
 
