@@ -7,7 +7,21 @@ This is the implementation of the ICLR 2023 paper [Anamnesic Neural Differential
 
 ## Installing the package
 
-The dependencies for the project are in `pyproject.toml`. You can create an environement with conda or poetry.
+The dependencies for the project are in `pyproject.toml`. I recommend you create an environement using conda and poetry.
+First create a conda environment.
+
+`conda create -n polyode python=3.9` 
+
+Then install poetry,
+
+`curl -sSL https://install.python-poetry.org | python3 -`
+
+Finally install the project.
+
+`poetry install`
+
+You are all set !
+
 
 ## Training PolyODEs
 
