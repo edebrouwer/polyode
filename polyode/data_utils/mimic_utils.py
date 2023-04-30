@@ -1,4 +1,4 @@
-from legendre import DATA_DIR
+from polyode import DATA_DIR
 import os
 import numpy as np
 import torch
@@ -6,9 +6,9 @@ import pandas as pd
 import tqdm
 import pytorch_lightning as pl
 from torch.utils.data import Dataset, DataLoader, Subset
-from legendre.utils import str2bool
-from legendre.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch
-from legendre.models.spline_cnode import SplineCNODEClass
+from polyode.utils import str2bool
+from polyode.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch
+from polyode.models.spline_cnode import SplineCNODEClass
 
 from numpy.random import default_rng
 

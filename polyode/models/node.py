@@ -7,7 +7,7 @@ import torch.nn as nn
 import plotly.graph_objects as go
 
 import pandas as pd
-from legendre.models.ode_utils import NODE
+from polyode.models.ode_utils import NODE
 
 from sklearn.metrics import roc_auc_score
 

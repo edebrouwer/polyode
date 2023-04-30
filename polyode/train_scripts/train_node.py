@@ -1,8 +1,8 @@
 from argparse import ArgumentParser
-from legendre.data_utils.pMNIST_utils import pMNISTDataModule
-from legendre.models.cnode import CNODE
+from polyode.data_utils.pMNIST_utils import pMNISTDataModule
+from polyode.models.cnode import CNODE
 
-from legendre.utils import str2bool
+from polyode.utils import str2bool
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
@@ -11,20 +11,20 @@ import copy
 import os
 import torch
 
-from legendre.models.node import SequentialODE
-from legendre.models.cnode import CNODE
-from legendre.models.cnode_ext import CNODExt
-from legendre.models.node_ext import NODExt
-from legendre.models.node_mod import NODE
-from legendre.models.hippo import HIPPO
-from legendre.models.rnn import RNN
-from legendre.models.simple_classif import SimpleClassif
+from polyode.models.node import SequentialODE
+from polyode.models.cnode import CNODE
+from polyode.models.cnode_ext import CNODExt
+from polyode.models.node_ext import NODExt
+from polyode.models.node_mod import NODE
+from polyode.models.hippo import HIPPO
+from polyode.models.rnn import RNN
+from polyode.models.simple_classif import SimpleClassif
 
-from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
-from legendre.data_utils.character_utils import CharacterTrajDataModule
-from legendre.data_utils.mimic_utils import MIMICDataModule
-from legendre.data_utils.lorenz_utils import LorenzDataModule
-from legendre.data_utils.activity_utils import ActivityDataModule
+from polyode.data_utils.simple_path_utils import SimpleTrajDataModule
+from polyode.data_utils.character_utils import CharacterTrajDataModule
+from polyode.data_utils.mimic_utils import MIMICDataModule
+from polyode.data_utils.lorenz_utils import LorenzDataModule
+from polyode.data_utils.activity_utils import ActivityDataModule
 
 
 def main(model_cls, data_cls, args):

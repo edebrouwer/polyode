@@ -1,10 +1,10 @@
 from argparse import ArgumentParser
-from legendre.models.cnode import CNODE, CNODEClassification
-from legendre.models.cnode_ext import CNODExt, CNODExtClassification
-from legendre.models.node_ext import NODExt, NODExtClassification
-from legendre.models.spline_cnode import SplineCNODEClass
+from polyode.models.cnode import CNODE, CNODEClassification
+from polyode.models.cnode_ext import CNODExt, CNODExtClassification
+from polyode.models.node_ext import NODExt, NODExtClassification
+from polyode.models.spline_cnode import SplineCNODEClass
 
-from legendre.utils import str2bool
+from polyode.utils import str2bool
 import pytorch_lightning as pl
 from pytorch_lightning.core.saving import _load_state
 from pytorch_lightning.loggers import WandbLogger
@@ -15,16 +15,16 @@ import os
 import torch
 import wandb
 
-from legendre.models.node import SequentialODE, SequentialODEClassification
-from legendre.models.node_mod import NODE,NODEClassification
-from legendre.data_utils.simple_path_utils import SimpleTrajDataModule
-from legendre.data_utils.pMNIST_utils import pMNISTDataModule
-from legendre.data_utils.character_utils import CharacterTrajDataModule
-from legendre.data_utils.mimic_utils import MIMICDataModule
-from legendre.data_utils.lorenz_utils import LorenzDataModule
-from legendre.data_utils.activity_utils import ActivityDataModule
-from legendre.models.rnn import RNN, RNNClassification
-from legendre.models.hippo import HIPPO, HippoClassification
+from polyode.models.node import SequentialODE, SequentialODEClassification
+from polyode.models.node_mod import NODE,NODEClassification
+from polyode.data_utils.simple_path_utils import SimpleTrajDataModule
+from polyode.data_utils.pMNIST_utils import pMNISTDataModule
+from polyode.data_utils.character_utils import CharacterTrajDataModule
+from polyode.data_utils.mimic_utils import MIMICDataModule
+from polyode.data_utils.lorenz_utils import LorenzDataModule
+from polyode.data_utils.activity_utils import ActivityDataModule
+from polyode.models.rnn import RNN, RNNClassification
+from polyode.models.hippo import HIPPO, HippoClassification
 
 
 def get_init_model(init_sweep_id, init_model_cls, irregular_rate, seed, multivariate):

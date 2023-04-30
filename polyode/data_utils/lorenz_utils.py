@@ -4,12 +4,12 @@ import pytorch_lightning as pl
 
 from scipy.integrate import odeint
 from torch.utils.data import Dataset, DataLoader, Subset
-from legendre.utils import str2bool
+from polyode.utils import str2bool
 
-from legendre.models.spline_cnode import SplineCNODEClass, evaluate_spline
+from polyode.models.spline_cnode import SplineCNODEClass, evaluate_spline
 from scipy.interpolate import CubicHermiteSpline, CubicSpline
 import tqdm
-from legendre.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch, get_constant_spline, get_linear_spline
+from polyode.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch, get_constant_spline, get_linear_spline
 
 
 def generate_path(start, Nt, Nobs, irregular_rate=1, regression_mode = False):

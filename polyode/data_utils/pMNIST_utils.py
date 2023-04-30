@@ -6,14 +6,14 @@ from torch.utils.data import Dataset, DataLoader, Subset
 import torch
 from PIL import Image
 import os
-from legendre.data_utils.simple_path_utils import get_hermite_spline
-from legendre.utils import str2bool
-from legendre.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch
-from legendre.models.spline_cnode import SplineCNODEClass
+from polyode.data_utils.simple_path_utils import get_hermite_spline
+from polyode.utils import str2bool
+from polyode.data_utils.simple_path_utils import get_hermite_spline, collate_irregular_batch
+from polyode.models.spline_cnode import SplineCNODEClass
 from torchvision.datasets import MNIST
 import tqdm 
 
-from legendre import DATA_DIR
+from polyode import DATA_DIR
 
 class pMNIST(MNIST):
     """

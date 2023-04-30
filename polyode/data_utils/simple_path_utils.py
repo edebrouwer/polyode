@@ -4,9 +4,9 @@ import pytorch_lightning as pl
 
 from scipy.integrate import odeint
 from torch.utils.data import Dataset, DataLoader, Subset
-from legendre.utils import str2bool
+from polyode.utils import str2bool
 
-from legendre.models.spline_cnode import SplineCNODEClass
+from polyode.models.spline_cnode import SplineCNODEClass
 from scipy.interpolate import CubicHermiteSpline, CubicSpline
 import tqdm
 

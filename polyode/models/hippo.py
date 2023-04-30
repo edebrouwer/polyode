@@ -8,12 +8,12 @@ import torch.nn as nn
 import plotly.graph_objects as go
 
 import pandas as pd
-from legendre.models.ode_utils import NODE
+from polyode.models.ode_utils import NODE
 from torchdiffeq import odeint
 import numpy as np
 
 from sklearn.metrics import roc_auc_score, accuracy_score
-from legendre.utils import str2bool
+from polyode.utils import str2bool
 from scipy.signal import cont2discrete
 from scipy import signal
 from scipy import linalg as la

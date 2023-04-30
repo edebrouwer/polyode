@@ -3,7 +3,7 @@ import pytorch_lightning as pl
 import torch.nn as nn
 
 from sklearn.metrics import roc_auc_score, accuracy_score
-from legendre.utils import str2bool
+from polyode.utils import str2bool
 
 
 class RNN(pl.LightningModule):
