@@ -2,8 +2,7 @@
 
 ![alt text](https://github.com/edebrouwer/orthopoly/blob/main/Fig1.png)
 
-This is the implementation of the ICLR 2023 paper [Anamnesic Neural Differential Equations with Orthogonal Polynomial Projections]
- (https://arxiv.org/abs/2303.01841)
+This is the implementation of the ICLR 2023 paper [Anamnesic Neural Differential Equations with Orthogonal Polynomial Projections](https://arxiv.org/abs/2303.01841)
 
 
 ## Installing the package
