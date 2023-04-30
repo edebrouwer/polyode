@@ -94,7 +94,7 @@ def main(model_cls, init_model_cls, data_cls, args):
     logger = WandbLogger(
         name=f"{args.model_type}_Class_{args.data_type}",
         project=f"orthopoly",
-        entity="edebrouwer",
+        entity=args.wand_user,
         log_model=False
     )
 
@@ -129,6 +129,7 @@ if __name__ == "__main__":
     parser.add_argument('--output_fun', type=str, default=None)
     parser.add_argument('--init_sweep_id', type=str,
                         default="edebrouwer/orthopoly/1m0srjpz")
+    parser.add_argument('--wandb_user', type=str, default="edebrouwer")
 
     partial_args, _ = parser.parse_known_args()
 

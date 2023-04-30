@@ -38,7 +38,7 @@ def main(model_cls, data_cls, args):
     logger = WandbLogger(
         name=f"{args.model_type}_{args.data_type}",
         project=f"orthopoly",
-        entity="edebrouwer",
+        entity=args.wandb_user,
         log_model=False
     )
 
@@ -75,6 +75,7 @@ if __name__ == "__main__":
     parser.add_argument('--early_stopping', default=50, type=int)
     parser.add_argument('--data_type', type=str, default="SimpleTraj")
     parser.add_argument('--model_type', type=str, default="SequentialODE")
+    parser.add_argument('--wandb_user', type=str, default="edebrouwer")
 
     partial_args, _ = parser.parse_known_args()
 
